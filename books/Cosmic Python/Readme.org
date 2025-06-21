@@ -1,0 +1,2 @@
+#+title: Architecture Patterns with Python aka Cosmic Python Book
+#+source: https://www.cosmicpython.com/book/preface.html

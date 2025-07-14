@@ -1,0 +1,9 @@
+[project]
+name = "final-assignment-template"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "gradio>=5.36.2",
+    "requests>=2.32.4",
+]

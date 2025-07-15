@@ -1,0 +1,3 @@
+[submodule "courses/huggingface-agents-course/agent_couse_Final_Assignment_Template"]
+	path = courses/huggingface-agents-course/agent_couse_Final_Assignment_Template
+	url = git@hf.co:spaces/nbljaved/agent_couse_Final_Assignment_Template

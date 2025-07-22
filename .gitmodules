@@ -1,3 +1,6 @@
 [submodule "courses/huggingface-agents-course/agent_couse_Final_Assignment_Template"]
 	path = courses/huggingface-agents-course/agent_couse_Final_Assignment_Template
 	url = git@hf.co:spaces/nbljaved/agent_couse_Final_Assignment_Template
+[submodule "courses/huggingface-mcp-course/mcp-course"]
+	path = courses/huggingface-mcp-course/mcp-course
+	url = https://github.com/huggingface/mcp-course.git

@@ -1,13 +1,13 @@
 #+title: Software Design by Example
 #+subtitle: A Tool-Based Introduction with Python
+#+startup: overview
 https://third-bit.com/sdxpy/
 
 * Chapter 2: Objects and Classes
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/oop/
-:header-args:python: :session ch2 :results output
+:header-args:python: :session ch2 :results output :async yes
 :END:
-
 ** Theory
 *** Intro
 
@@ -63,7 +63,7 @@ Since =Square= and =Circle= have the same methods, we can use them interchangibl
 This is called *polymorphism*.
 It reduces cognitive load by allowing the people using related things to ignore their differences:
 
-#+begin_src python :results output
+#+begin_src python
 examples = [Square("sq", 3), Circle("ci", 2)]
 for thing in examples:
     n = thing.name
@@ -80,7 +80,7 @@ for thing in examples:
 *** Using dictionary to implement polymorphism
 :PROPERTIES:
 :ID:       c5c68489-11e0-4960-bb9b-f003d127ac63
-:header-args:python: :session ch2 :results output :eval no
+:header-args:python: :session ch2 :results output :eval no :async yes
 :END:
 
 #+CAPTION: Concept map for implementing objects and classes
@@ -290,5 +290,5 @@ We need changes:
 * Chapter 3: Finding duplicate files
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/dup/
-:header-args:python: :session ch3 :results output
+:header-args:python: :session ch3 :results output :async yes
 :END:

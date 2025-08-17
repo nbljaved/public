@@ -1,3 +1,294 @@
 #+title: Software Design by Example
 #+subtitle: A Tool-Based Introduction with Python
 https://third-bit.com/sdxpy/
+
+* Chapter 2: Objects and Classes
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/oop/
+:header-args:python: :session ch2 :results output
+:END:
+
+** Theory
+*** Intro
+
+#+CAPTION: Python class example (with inheritance)
+#+begin_src python
+import math
+
+class Shape:
+    def __init__(self, name):
+        self.name = name
+
+    def perimeter(self):
+        raise NotImplementedError
+
+    def area(self):
+        raise NotImplementedError
+
+    def density(self, weight):
+        return weight / self.area()
+
+class Square(Shape):
+    def __init__(self, name, side):
+        super().__init__(name)
+        self.side = side
+
+    def perimeter(self):
+        return 4 * self.side
+
+    def area(self):
+        return self.side ** 2
+
+class Circle(Shape):
+    def __init__(self, name, radius):
+        super().__init__(name)
+        self.radius = radius
+
+    def perimeter(self):
+        return 2 * math.pi * self.radius
+
+    def area(self):
+        return math.pi * (self.radius ** 2)
+
+#+end_src
+
+#+RESULTS:
+
+<<making constructors>>
+- NOTE :: How in the subclasses' constructor we have to *manually*
+  1. mention the arguments (to ~__init__~) and
+  2. call the ~super~ method
+
+Since =Square= and =Circle= have the same methods, we can use them interchangibly.
+This is called *polymorphism*.
+It reduces cognitive load by allowing the people using related things to ignore their differences:
+
+#+begin_src python :results output
+examples = [Square("sq", 3), Circle("ci", 2)]
+for thing in examples:
+    n = thing.name
+    p = thing.perimeter()
+    a = thing.area()
+    d = thing.density(5)
+    print(f"{n} has perimeter {p:.2f}, area {a:.2f} and density {d:.2f}")
+#+end_src
+
+#+RESULTS:
+: sq has perimeter 12.00, area 9.00 and density 0.56
+: ci has perimeter 12.57, area 12.57 and density 0.40
+
+*** Using dictionary to implement polymorphism
+:PROPERTIES:
+:ID:       c5c68489-11e0-4960-bb9b-f003d127ac63
+:header-args:python: :session ch2 :results output :eval no
+:END:
+
+#+CAPTION: Concept map for implementing objects and classes
+[[file:images/Chapter_2:_Objects_and_Classes/2025-08-17_15-49-47_screenshot.png]]
+
+#+NAME: my-classes
+#+begin_src python :noweb yes :eval yes
+from pprint import pprint
+
+<<my-class-methods>>
+<<my-class-constructors>>
+<<generic-make-method>>
+
+MyShape = {
+    # methods
+    "density": shape_density,# this method will be inherited
+    # metadata
+    "_classname": "MyShape", # obj._classname will tell the class of an object
+    "_new": make_my_shape,
+    "_parent": None, # obj._parent will is parent class of this object's class
+}
+
+MySquare = {
+    "perimeter": square_perimeter,
+    "area": square_area,
+    # metadata
+    "_new": make_my_square,
+    "_classname": "MySquare",
+    "_parent": MyShape,
+}
+
+MyCircle = {
+    "perimeter": circle_perimeter,
+    "area": circle_area,
+    # metadata
+    "_new": make_my_circle,
+    "_classname": "MyCircle",
+    "_parent": MyShape,
+}
+
+pprint(make(MyCircle, 'cute circle', radius=2))
+pprint(make(MySquare, 'stupid square', side=4))
+#+end_src
+
+#+RESULTS: my-classes
+#+begin_example
+{'class': {'_classname': 'MyCircle',
+           '_new': <function make_my_circle at 0x7ed8a19349a0>,
+           '_parent': {'_classname': 'MyShape',
+                       '_new': <function make_my_shape at 0x7ed8a19345e0>,
+                       '_parent': None,
+                       'density': <function shape_density at 0x7ed8a19351c0>},
+           'area': <function circle_area at 0x7ed8a1934fe0>,
+           'perimeter': <function circle_perimeter at 0x7ed8a1934ae0>},
+ 'name': 'cute circle',
+ 'radius': 2}
+{'class': {'_classname': 'MySquare',
+           '_new': <function make_my_square at 0x7ed8a19360c0>,
+           '_parent': {'_classname': 'MyShape',
+                       '_new': <function make_my_shape at 0x7ed8a19345e0>,
+                       '_parent': None,
+                       'density': <function shape_density at 0x7ed8a19351c0>},
+           'area': <function square_area at 0x7ed8a1937e20>,
+           'perimeter': <function square_perimeter at 0x7ed8a1937240>},
+ 'name': 'stupid square',
+ 'side': 4}
+#+end_example
+
+Our classes only define:
++ ~_classname~ :: the class' name
++ ~_new~ :: their constructor
+  - NOTE :: requires the Class, which in turn requires this constructor, but it works :)
++ ~_parent~ :: reference to their parent class.
+  Therefore, we also /automatically/ inherit the method's of the parent class.
++ the class' methods
+
+#+CAPTION: Constructors for MySquare and MyCircle
+#+NAME: my-class-constructors
+#+begin_src python :noweb yes
+def make(cls, *args, **kwargs):
+    """
+    Generic make function
+    """
+    return cls['_new'](*args, **kwargs)
+
+def make_my_shape(name):
+    return {
+        "name": name,
+        "class": MyShape,
+    }
+
+def make_my_square(name, side):
+    # calling the super method
+    # assigning new attributes
+    #
+    # MySquare overwrites the 'class' key
+    # (we use '|' to combine 2 dicts)
+    return make(MyShape, name) | {
+        "side": side,
+        "class": MySquare,
+    }
+
+def make_my_circle(name, radius):
+    return make(MyShape, name) | {
+        "radius": radius,
+        "class": MyCircle,
+    }
+#+end_src
+
+Each class constructor only defines:
++ ~class~ :: reference to its class
++ its attributes (_all manual_)
+  See [[making constructors]]
+  - NOTE :: Here we are mentioning all the attributes, even those of the parent class.
+    - This is a *manual* step.
+      When making the constructor for some class, we need to /THINK/ about its parent class and the arguments of that class' constructor.
+      (Also, Python can only have one ~__init__~  method)
+
+#+CAPTION: Methods for MyShape, MySquare, MyCircle
+#+NAME: my-class-methods
+#+begin_src python
+# In the below function the 'self' represents the obj
+def shape_density(self, weight):
+    return weight / call_method(self, "area")
+
+def square_perimeter(self):
+    return 4 * self['side']
+
+def square_area(self):
+    return self['side'] ** 2
+
+def circle_perimeter(self):
+    return 2 * math.pi * self['radius']
+
+def circle_area(self):
+    return math.pi * (self['radius'] ** 2)
+#+end_src
+
+- Notice how some 'Shape' object would call its 'density' method:
+  ~obj["density"](obj, weight)~
+
+  which is very similar to:
+  ~obj.density(weight)~ (here the 'self' object passed is implicit)
+
+  - Also, not the definition of the 'shape_density' function.
+    Its arguments are the same as that of a normal class' methods.
+
+*** call_method implementation
+
+The call_method implementation is important as that is what ties all this together.
+
+It has to look like ~call_method(object, method_name, method_arguments ...)~
+
+#+NAME: call_method
+#+begin_src python
+def call_method(obj, method_name: str, *method_args, **method_kwargs):
+    def find_method(obj, method_name):
+        "Returns the method or None (if unable to find)"
+        cls = obj['class']
+        while cls:
+            if method_name in cls:
+                return cls[method_name]
+            cls = cls['_parent']
+        return None
+
+    method = find_method(obj, method_name)
+    print(f'calling method: {method.__name__}, with args: {method_args}, with kwargs: {method_kwargs}')
+    return method(obj, *method_args, **method_kwargs)
+#+end_src
+
+#+RESULTS: call_method
+
+#+begin_src python
+examples = [make(MySquare, "sq", 3), make(MyCircle, "ci", 2)]
+for ex in examples:
+    n = ex["name"]
+    d = call_method(ex, "density", 5)
+    print(f"{n}: {d:.2f}")
+    print()
+#+end_src
+
+#+RESULTS:
+: calling method: shape_density, with args: (5,), with kwargs: {}
+: calling method: square_area, with args: (), with kwargs: {}
+: sq: 0.56
+:
+: calling method: shape_density, with args: (5,), with kwargs: {}
+: calling method: circle_area, with args: (), with kwargs: {}
+: ci: 0.40
+
+** Questions
+*** Class methods and static methods
+
+*Q.* Explain the differences between class methods and static methods
+*A.* [[https://stackoverflow.com/questions/136097/what-is-the-difference-between-staticmethod-and-classmethod-in-python][StackOverflow answer]]
+
+*Q.* Implement both using dictionaries.
+
+We need changes:
+- in the ~call_method~ function
+- how we store a method
+  - we have to mention the function implementation as well as the type of method it is, one of:
+    - normal method ~def (self, ...)~
+    - classmethod ~def (cls, ...)~
+    - staticmethod ~def (...)~ (No self or cls)
+
+* Chapter 3: Finding duplicate files
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/dup/
+:header-args:python: :session ch3 :results output
+:END:

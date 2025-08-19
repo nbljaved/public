@@ -1,5 +1,6 @@
 #+title: Software Design by Example
 #+subtitle: A Tool-Based Introduction with Python
+#+auto_tangle: t
 #+startup: overview
 https://third-bit.com/sdxpy/
 
@@ -291,4 +292,663 @@ We need changes:
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/dup/
 :header-args:python: :session ch3 :results output :async yes
+:GPTEL_TOPIC: chapter-3:-finding-duplicate-files
 :END:
+** Summary
+:PROPERTIES:
+:ID:       ba463b34-d27b-4adc-a0ee-9021cd241ad9
+:END:
+
+- A hash function:
+  * creates a fixed-size value from an arbitrary sequence of bytes.
+  * has deterministic output, but it is not easy to predict.
+  * if good, has evenly distributed output.
+- A large cryptographic hash can be used to uniquely identify a file's contents.
+
+#+caption: summarizes the key ideas in this chapter, the most important of which is that SOME ALGORITHMS ARE INTRINSICALLY BETTER THAN OTHERS.
+[[file:images/Chapter_3:_Finding_duplicate_files/2025-08-18_15-14-09_screenshot.png]]
+
+** Theory
+*** Setup
+
+#+caption: Prepare files
+#+begin_src sh
+mkdir -p ./src/ch3/files
+
+$(
+    cd ./src/ch3/files
+
+    echo aaa > a1.txt
+    echo aaa > a2.txt
+    echo aaa > a3.txt
+    echo bb > b1.txt
+    echo bb > b2.txt
+    echo c > c1.txt
+)
+
+ls ./src/ch3/files
+#+end_src
+
+#+RESULTS:
+| a1.txt |
+| a2.txt |
+| a3.txt |
+| b1.txt |
+| b2.txt |
+| c1.txt |
+
+#+name: filenames
+#+begin_src python
+from pprint import pprint
+
+filenames = [
+    './src/ch3/files/a1.txt',
+    './src/ch3/files/a2.txt',
+    './src/ch3/files/a3.txt',
+    './src/ch3/files/b1.txt',
+    './src/ch3/files/b2.txt',
+    './src/ch3/files/c1.txt'
+]
+#+end_src
+
+*** Naive approach
+If we have /N/ files.
+To find all duplicate files, it will take us N-1 + N-2 + ... + 1 = O(N^2) comparisions.
+Each of the comparision also involves expensive byte-by-byte comparision on files the _might_ be equal.
+
+#+name: same-bytes
+#+begin_src python
+def same_bytes(file1: str, file2: str, log=False) -> bool:
+    bytes1 = open(file1, 'rb').read()
+    bytes2 = open(file2, 'rb').read()
+    if log:
+        print(bytes1)
+        print(bytes2)
+    return bytes1 == bytes2
+#+end_src
+
+#+begin_src python :noweb yes
+<<same-bytes>>
+print(same_bytes('./src/ch3/files/a1.txt', './src/ch3/files/c1.txt', log=True))
+#+end_src
+
+#+RESULTS:
+: b'aaa\n'
+: b'c\n'
+: False
+
+- Note ::  that the files are opened in binary mode using ~"rb"~ instead of the
+  usual ~"r"~.
+  - This tells Python to read the bytes exactly as they are rather than trying to convert them to characters.
+
+#+name: naive
+#+caption: O(n^2) algorithm
+#+begin_src python :noweb yes
+<<filenames>>
+<<same-bytes>>
+
+def find_duplicates(filenames):
+    duplicates = []
+    n = len(filenames)
+    for i in range(n):
+        file1 = filenames[i]
+        for j in range(i+1, n):
+            file2 = filenames[j]
+            if same_bytes(file1, file2):
+                duplicates.append((file1, file2))
+    return duplicates
+
+pprint(find_duplicates(filenames))
+#+end_src
+
+#+RESULTS: naive
+: [('./src/ch3/files/a1.txt', './src/ch3/files/a2.txt'),
+:  ('./src/ch3/files/a1.txt', './src/ch3/files/a3.txt'),
+:  ('./src/ch3/files/a2.txt', './src/ch3/files/a3.txt'),
+:  ('./src/ch3/files/b1.txt', './src/ch3/files/b2.txt')]
+
+*** Hash approach
+Instead of comparing every file against every other, let’s process each file once to produce a short identifier that depends only on the file’s contents and then only compare files that have the same identifier, i.e., that /might/ be equal.
+
+If files are evenly divided into =g= groups then each group will contain roughly =N/g= files, so the total work will be roughly =g*(N/g)^2=.
+
+Simplifying, this is =N^2/g= , so as the number of groups grows, and the overall running time should decrease.
+
+- We can use *hashing* to split the files into groups.
+  We construct IDs for files by using a /hash function/ to produce a /hash code/.
+
+  Since bytes are just numbers, we can create a very simple hash function by adding up the bytes in a file and taking the remainder module some number (the no. of groups we want).
+
+#+caption: A naive hash function
+#+begin_src python
+def naive_hash(data):
+    return sum(data) % 13
+
+example = bytes('file content', 'utf-8')
+print(f'Example: {example}')
+
+id = naive_hash(example)
+print(f'id: {id} \n')
+
+for byt in example:
+    print(f'byte: {byt}')
+print(f'\nsum: {sum(example)}, sum%13 = {sum(example)%13}')
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Example: b'file content'
+id: 2
+
+byte: 102
+byte: 105
+byte: 108
+byte: 101
+byte: 32
+byte: 99
+byte: 111
+byte: 110
+byte: 116
+byte: 101
+byte: 110
+byte: 116
+
+sum: 1211, sum%13 = 2
+#+end_example
+
+*** Better hashing
+For =g= groups we have to perform =O(N^2/g)= comparisions.
+If /g = N/, i.e. for each file its id has _a unique bucket_, then our complexiy becomes =O(N)=.
+
+- NOTE :: We have to read each file at least once anyway, so we can’t possibly do better than =O(N)=.
+
+*Q.* How can we ensure that each unique file winds up in its own group?
+
+*A.* Use a /cryptographic hash function/:
+
+   - The output of such a function is completely deterministic: given the same bytes in the same order, it will always produce the same output.
+
+   - However, the output is distributed like a uniform random variable: each possible output is equally likely, which ensures that files will be evenly distributed between groups.
+
+- SHA256 hashing algorithm :: Given some bytes as input, this function produces a 256-bit hash, which is normally written as a 64-character (as 64x4=256) hexadecimal (4bit) string.
+
+#+name: sha256
+#+begin_src python
+from hashlib import sha256
+
+# strings must be encoded before hashing
+example = bytes('some content', 'utf-8')
+
+output = sha256(example).hexdigest()
+print(output)
+#+end_src
+
+#+RESULTS: sha256
+: 290f493c44f5d63d06b374d0a5abd292fae38b92cab2fae5efefe1b0e9347f56
+
+#+name: duplicates
+#+caption: O(n) algorithm
+#+begin_src python :noweb yes
+from hashlib import sha256
+<<filenames>>
+
+def hash_files(filenames):
+    groups = dict()
+    for filename in filenames:
+        data = open(filename, 'rb').read()
+        hash_code = sha256(data).hexdigest()
+        if hash_code not in groups:
+            groups[hash_code] = set()
+        groups[hash_code].add(filename)
+    return groups
+
+for files in hash_files(filenames).values():
+    # each set of files is a duplicate of each other
+    print(files)
+#+end_src
+
+#+RESULTS: duplicates
+: {'./src/ch3/files/a2.txt', './src/ch3/files/a1.txt', './src/ch3/files/a3.txt'}
+: {'./src/ch3/files/b2.txt', './src/ch3/files/b1.txt'}
+: {'./src/ch3/files/c1.txt'}
+
+*** Birthday problem
+
+The odds that two people share a birthday are 1/365 (ignoring February 29).
+
+The odds that they don’t are therefore \(\frac{365}{365}\)x\(\frac{364}{365}\).
+When we add a third person, the odds that nobody share a birthday are \(\frac{365}{365}\)x\(\frac{364}{365}\)x\(\frac{363}{365}\).
+
+If we keep going, there’s a 50% chance of two people sharing a birthday in a group of just 23 people, and a _99.9% chance with 70 people_.
+
+The same math can tell us how many files we need to hash before there’s a 50% chance of a collision with a 256-bit hash. According to Wikipedia, the answer is approximately 4 x 10^38 files.
+We’re willing to take that risk.
+
+** Questions
+*** Odds of collision
+If hashes were only 2 bits long, then the chances of collision with each successive file assuming no previous collision are:
+
+| Number of Files | Odds of Collision |
+|-----------------+-------------------|
+|               1 |                0% |
+|               2 |               25% |
+|               3 |               50% |
+|               4 |               75% |
+|               5 |              100% |
+
+*Q.* A colleague of yours says this means that if we hash four files, there’s only a 75% chance of any collision occurring. What are the actual odds?
+
+*A.* This is _a common confusion_.
+
+2 bits means 4 possible codes.
+The odds of collision:
+- #files = 1 is 0.
+- #files = 2 is 1/4 (second file will collide if it takes the value of the first file)
+- #files = 3 is 2/4 (third file will collide if it takes value of either of the previous files)
+- #files = 4 is 3/4
+- #files >= 5 is 1.
+
+But, if we hash 4 files the odds of them not colliding is = 4/4 x 3/4 x 2/4 x 1/4 = 3/32
+Therefore, the odds of their being 1 collision when hashing 4 files = 1 - 3/32 = 0.90625 i.e. 90.625%
+
+*** Streaming
+
+- streaming API ::
+  An API that processes data in chunks rather than needing to have all of it in memory at once.
+  Streaming APIs usually require handlers for events such as:
+  - “start of data”,
+  - “next block”, and
+  - “end of data”
+
+A streaming API delivers data one piece at a time rather than all at once. Read the documentation for the update method of hashing objects in Python’s [[https://docs.python.org/3/library/hashlib.html][hashing module]] and rewrite the duplicate finder from this chapter to use it.
+
+#+caption: streaming hashing
+#+begin_src python :noweb yes
+from hashlib import sha256
+
+m = sha256()
+# => m = <sha256 _hashlib.HASH object @ 0x71eb1a40c730>
+
+m.update(b"Nobody inspects")
+m.update(b" the spammish repetition")
+
+m.digest()
+# => b'\x03\x1e\xdd}Ae\x15\x93\xc5\xfe\\\x00o\xa5u+7\xfd\xdf\xf7\xbcN\x84:\xa6\xaf\x0c\x95\x0fK\x94\x06'
+
+m.hexdigest()
+# => '031edd7d41651593c5fe5c006fa5752b37fddff7bc4e843aa6af0c950f4b9406'
+
+sha256(b"Nobody inspects the spammish repetition").hexdigest()
+# => '031edd7d41651593c5fe5c006fa5752b37fddff7bc4e843aa6af0c950f4b9406'
+#+end_src
+
+* Chapter 4: Matching patterns
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/glob/
+:header-args:python: :session ch4 :results output :async yes
+:header-args:sh: :session ch4-sh :results output :async yes
+:END:
+** Summary
+:PROPERTIES:
+:ID:       1e611433-31e2-4a18-800b-903d2eebc169
+:END:
+
+- Use globs and regular expressions to match patterns in text.
+- Use inheritance to make matchers composable and extensible.
+- Simplify code by having objects delegate work to other objects.
+
+- Use the *Null Object pattern* to eliminate special cases in code.
+
+- Use standard refactorings to move code from one working state to another.
+- Build and check the parts of your code you are least sure of first to find out if your design will work.
+
+#+caption: summarizes the key ideas in this chapter; we will see the *Null Object* and *Chain of Responsibility* design patterns again.
+[[file:images/Chapter_4:_Matching_patterns/2025-08-18_16-54-52_screenshot.png]]
+
+** Theory
+*** Setup
+
+#+begin_src sh
+mkdir -p ./src/ch4/
+#+end_src
+
+*** Simple patterns
+:PROPERTIES:
+:ID:       f9f26345-73e4-4da9-a36c-0fbb127cf219
+:END:
+
+|---------+--------+--------|
+| *Pattern* | *Text*   | *Match?* |
+|---------+--------+--------|
+| abc     | “abc”  | true   |
+| ab      | “abc”  | false  |
+| abc     | “ab”   | false  |
+| *       | ”“     | true   |
+| *       | “abc”  | true   |
+| a*c     | “abc”  | true   |
+| {a,b}   | “a”    | true   |
+| {a,b}   | “c”    | false  |
+| {a,b}   | “ab”   | false  |
+| *{x,y}  | “abcx” | true   |
+|---------+--------+--------|
+
++ Matching is conceptually simple.
+
+  * If the first element of the pattern matches the target string at the current location, we check if the rest of the pattern matches what’s left of the string.
+
+  * If the element doesn’t match the front of the string, or if the rest of the pattern can’t match the rest of the string, matching fails. (This behavior makes globbing different from regular expressions, which can match parts of strings.)
+
+This design makes use of the *Chain of Responsibility* design pattern.
+Each matcher matches if it can then asks the next matcher in the chain to try to match the remaining text (Figure 4.2).
+Crucially, objects don’t know how long the chain after them is: they just know whom to ask next.
+
+#+caption: matching with Chain of Responsibility
+[[file:images/Chapter_4:_Matching_patterns/2025-08-18_17-34-00_screenshot.png]]
+
+- Chain of Responsibility pattern ::
+  A design pattern in which each object either handles a request or passes it on to another object.
+
+- Null Object pattern ::
+  A design pattern in which a placeholder object is used instead of /None/.
+
+  The placeholder object has the methods of the object usually used, but those methods do 'nothing'.
+  - NOTE :: 'nothing' DOESN'T mean that the return value of those methods has to be /None/.
+
+  This pattern saves other code from having to check repeatedly for /None/.
+
+So, we will define a base class ~Pattern~ that will have a method ~match~ which returns boolean indicating if the ~Pattern~ matches some text.
+To refer to the next ~Pattern~ we will note that down in its 'rest' attribute.
+
+#+name: base-class
+#+caption: base and null object class
+#+begin_src python :tangle ./src/ch4/matcher.py :noweb yes
+Pattern = type('Pattern')
+class Pattern:
+    def __init__(self, rest: Pattern | None = None):
+        """
+        Subclasses of Pattern can take two arguments:
+        1. set of characters, a str etc.
+        2. rest (the next Pattern)
+        """
+        # NOTE: How we can pass the argument has None and it is handled by the
+        # Null Object pattern
+        self.rest : Pattern = rest if rest is not None else Null()
+
+    def match(self, text: str) -> bool:
+        """
+        Returns boolean indicating if Pattern matches `text`.
+        """
+        length_of_matched_text = self._match(text, start=0)
+        return len(text) == length_of_matched_text
+
+class Null(Pattern):
+    """
+    Null Object Pattern
+    Null() is the placeholder object instead of 'None'
+    """
+    def __init__(self):
+        """
+        Null objects must be at the end of the matching chain, i.e., their 'rest'
+        must be None, so we remove the 'rest' parameter from the class’s
+        constructor and pass 'None' up to the parent constructor every time.
+        """
+        self.rest = None # base case
+
+    def _match(self, text, start):
+        """
+        Since Null objects don’t match anything, Null._match immediately returns
+        whatever starting point it was given.
+
+        Every other matcher can now pass responsibility down the chain without
+        having to test whether it’s the last matcher in line or not.
+        """
+        return start
+
+<<literal pattern>>
+<<any pattern>>
+<<either pattern>>
+#+end_src
+
+- ~Match.rest~ requires every child class to have a helper method called ~_match~ that returns the location from which searching is to continue.
+
+- ~Match.match~ checks whether the entire match reaches the end of the target string and returns True or False as appropriate.
+
+*** Implement Lit(Pattern)
+
+#+caption: literal tests
+#+begin_src python :tangle ./src/ch4/test_literal.py
+from matcher import *
+
+def test_literal_match_entire_string():
+    # /abc/ matches "abc"
+    assert Lit("abc").match("abc")
+
+def test_literal_substring_alone_no_match():
+    # /ab/ doesn't match "abc"
+    assert not Lit("ab").match("abc")
+
+def test_literal_superstring_no_match():
+    # /abc/ doesn't match "ab"
+    assert not Lit("abc").match("ab")
+#+end_src
+
+For the above tests we define the following ~Literal~ pattern:
+
+#+name: literal pattern
+#+begin_src python
+class Lit(Pattern):
+    def __init__(self, chars: str, rest=None):
+        super().__init__(rest)
+        self.chars = chars
+
+    def _match(self, text: str, start=0):
+        end = len(self.chars) + start
+        if text[start:end] != self.chars:
+            # failed
+            #
+            # this is the position to next search,
+            # (therefore None means failed)
+            return None
+        # passed
+        return self.rest._match(text, start=end)
+#+end_src
+
+
+#+caption: literal test to make sure chaining is working
+#+begin_src python :tangle ./src/ch4/test_literal.py
+def test_literal_followed_by_literal_match():
+    # /a/+/b/ matches "ab"
+    assert Lit("a", Lit("b")).match("ab")
+
+def test_literal_followed_by_literal_no_match():
+    # /a/+/b/ doesn't match "ac"
+    assert not Lit("a", Lit("b")).match("ac")
+#+end_src
+
+
+#+begin_src sh :async yes
+uvx pytest ./src/ch4/test_literal.py
+#+end_src
+
+#+RESULTS:
+: =============================== test session starts ================================
+: platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 5 items
+:
+: src/ch4/test_literal.py .....                                                [100%]
+:
+: ================================ 5 passed in 0.01s =================================
+
+*** Implement Any(Pattern)
+
+#+caption: any's tests
+#+begin_src python :tangle ./src/ch4/test_any.py
+from matcher import *
+
+def test_any_matches_empty():
+    # /*/ matches ""
+    assert Any().match("")
+
+def test_any_matches_entire_string():
+    # /*/ matches "abc"
+    assert Any().match("abc")
+
+def test_any_matches_as_prefix():
+    # /*def/ matches "abcdef"
+    assert Any(Lit("def")).match("abcdef")
+
+def test_any_matches_as_suffix():
+    # /abc*/ matches "abcdef"
+    assert Lit("abc", Any()).match("abcdef")
+
+def test_any_matches_interior():
+    # /a*c/ matches "abc"
+    assert Lit("a", Any(Lit("c"))).match("abc")
+#+end_src
+
+Keeping in mind the above tests, we write the following class:
+
+#+name: any pattern
+#+begin_src python
+class Any(Pattern):
+    def __init__(self, rest=None):
+        super().__init__(rest)
+
+    def _match(self, text: str, start=0):
+        """
+        Here '*' can match 0 or more of the characters
+        in text[start:].
+        Here, we implement lazy matching, '*' will match
+        the shortes string so that the 'rest' of Pattern can
+        successfully match 'text'.
+        """
+        n = len(text)
+        # length matched = from 0 -> len(text[start:])
+        #
+        # NOTE1: i=n+1 => * matched the complete text[start:]
+        #       and the 'rest' will have to match the empty string.
+        for i in range(start, n+1):
+            # i the index where 'rest' will start matching from,
+            # i.e. 'rest' tries to match text[i:]
+            #
+            # if self.rest.match(text[i:]):
+            #     return n
+            # OR
+            j = self.rest._match(text, start=i)
+            if j == n: # NOTE2: why we test for this (hint we don't rely on 'rest')
+                # success
+                return n # NOTE3
+
+        # fail
+        return None
+#+end_src
+
+- NOTE :: In the above code
+  - NOTE1
+  - NOTE2
+  - NOTE3
+
+#+begin_src sh
+uvx pytest ./src/ch4/test_any.py
+#+end_src
+
+#+RESULTS:
+: =============================== test session starts ================================
+: platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 5 items
+:
+: src/ch4/test_any.py .....                                                    [100%]
+:
+: ================================ 5 passed in 0.01s =================================
+
+*** Implement Either(Pattern)
+
+#+name: test either
+#+begin_src python :tangle ./src/ch4/test_either.py
+from matcher import *
+
+def test_either_two_literals_first():
+    # /{a,b,c}/ matches "a"
+    assert Either(Lit("a"), Lit("b")).match("a")
+
+def test_either_two_literals_not_both():
+    # /{a,b,c}/ doesn't match "ab"
+    assert not Either(Lit("a"), Lit("b"), Lit("c")).match("ab")
+
+def test_either_followed_by_literal_match():
+    # /{a,b,c}d/ matches "cd"
+    assert Either(Lit("a"), Lit("b"), Lit("c"), rest=Lit("d")).match("cd")
+
+def test_either_followed_by_literal_no_match():
+    # /{a,b,c}d/ doesn't match "cx"
+    assert not Either(Lit("a"), Lit("b"), Lit("c"), rest=Lit("d")).match("cx")
+
+def test_either_followed_by_literal_no_match2():
+    # /{a,b,cd}d/ matches "cd"
+    assert not Either(Lit("a"), Lit("b"), Lit("cd"), rest=Lit("d")).match("cd")
+
+def test_empty_either_empty_literal_match():
+    # /{}/ matches ""
+    assert Either().match("")
+
+def test_empty_either_literal_match():
+    # /{}abc/ matches ""
+    assert Either(rest=Lit("abc")).match("abc")
+
+def test_empty_either_literal_no_match():
+    # /{}abc/ doesn't match "abd"
+    assert not Either().match("abd")
+#+end_src
+
+Keeping in mind the above test cases:
+
+#+name: either pattern
+#+begin_src python
+class Either(Pattern):
+    def __init__(self, *patterns, rest=None):
+        super().__init__(rest)
+        self.patterns = patterns
+
+    def _match(self, text, start=0):
+        # NOTE: what if patterns are empty ?
+        if not self.patterns:
+            return self.rest._match(text, start)
+
+        # Try each pattern
+        for pattern in self.patterns:
+            j = pattern._match(text, start)
+            if j is None:
+                continue
+            if len(text) == self.rest._match(text, start=j):
+                # pass
+                return len(text)
+        # fail
+        return None
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch4/test_either.py
+#+end_src
+
+#+RESULTS:
+: =============================== test session starts ================================
+: platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 8 items
+:
+: src/ch4/test_either.py ........                                              [100%]
+:
+: ================================ 8 passed in 0.01s =================================
+
+* TODO Chapter 5: Parsing Text
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/parse/
+:header-args:python: :session ch5 :results output :async yes
+:header-args:sh: :session ch5-sh :results output :async yes
+:END:
+
+** Summary
+
+** Theory

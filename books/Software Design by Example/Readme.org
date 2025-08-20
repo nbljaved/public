@@ -681,6 +681,8 @@ class Pattern:
         length_of_matched_text = self._match(text, start=0)
         return len(text) == length_of_matched_text
 
+    <<Pattern __eq__>>
+
 class Null(Pattern):
     """
     Null Object Pattern
@@ -735,7 +737,7 @@ def test_literal_superstring_no_match():
 For the above tests we define the following ~Literal~ pattern:
 
 #+name: literal pattern
-#+begin_src python
+#+begin_src python :noweb yes
 class Lit(Pattern):
     def __init__(self, chars: str, rest=None):
         super().__init__(rest)
@@ -751,6 +753,8 @@ class Lit(Pattern):
             return None
         # passed
         return self.rest._match(text, start=end)
+
+    <<Lit __eq__>>
 #+end_src
 
 
@@ -942,13 +946,751 @@ uvx pytest ./src/ch4/test_either.py
 :
 : ================================ 8 passed in 0.01s =================================
 
-* TODO Chapter 5: Parsing Text
+* Chapter 5: Parsing Text
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/parse/
-:header-args:python: :session ch5 :results output :async yes
+:header-args:python: :session ch5 :results output :async yes :eval no
 :header-args:sh: :session ch5-sh :results output :async yes
 :END:
 
 ** Summary
+:PROPERTIES:
+:ID:       6e6a4a75-8d34-4f9c-ad32-7cb0d668fd09
+:END:
+
+#+caption: Gist
+#+begin_example
+Tranform text -> list of tokens List[[token_type, token_args]] --parse-> either AST or actual python objects
+#+end_example
+
+ - Parsing transforms text that's easy for people to read into objects that are easy for computers to work with.
+ - A grammar defines the textual patterns that a parser recognizes.
+
+ - Most parsers tokenize input text and then analyze the tokens.
+ - Most parsers need to implement some form of precedence to prioritize different patterns.
+
+ - Operations like addition and function call work just like user-defined functions.
+ - Programs can overload built-in operators by defining specially-named methods that are recognized by the compiler or interpreter.
+
+#+caption: Parser concept map
+[[file:images/Chapter_5:_Parsing_Text/2025-08-19_16-39-33_screenshot.png]]
 
 ** Theory
+*** Intro
+We constructed objects to match patterns in [[*Chapter 4: Matching patterns][Chapter 4: Matching patterns]], but an expression like ~"2023-*{pdf,txt}"~ is a lot easier to read and write than code like ~Lit("2023-", Any(Either("pdf", "txt")))~.
+
+If we want to use the former, we need a parser to convert those human-readable strings into machine-comprehensible objects.
+
+#+caption: glob grammar that our parse will handle
+| *Meaning*                 | *Character* |
+|-------------------------+-----------|
+| Any literal character c | c         |
+| Zero or more characters | *         |
+| Alternatives            | {x,y}     |
+
+When we are done, our parser should be able to recognize that =2023-*.{pdf,txt}= means the literal =2023-= , any characters, a literal =.=, and then either a literal =pdf= or a literal =txt=.
+
+*** Tokenizing
+:PROPERTIES:
+:ID:       13eb27ae-7cbf-4c1d-9671-a4d69fdb3aa2
+:END:
+
+Most parsers are written in 2 parts:
+
+1. The first stage groups characters into atoms of text called “tokens“, which are meaningful pieces of text like the digits making up a number or the letters making up a variable name.
+
+2. The second stage of parsing assembles tokens to create an *abstract syntax tree*,
+   that represents the structure of what was parsed
+
+#+caption: Stages in parsing pipeline
+[[file:images/Chapter_5:_Parsing_Text/2025-08-20_10-08-30_screenshot.png]]
+
+Our grammars token are:
+- special characters:
+  - ,
+  - {
+  - }
+  - *
+- (other characters) a sequence of one or more other characters is a single multi-letter token.
+
+The above classification determines the design of our tokenizer:
+
+1. If a character is not special, then append it to the current literal (if there is one) or start a new literal (if there isn’t).
+
+2. If a character is special, then close the existing literal (if there is one) and create a token for the special character. Note that the =,= character closes a literal but doesn’t produce a token.
+
+Eg: For the string "2023-*{pdf, txt}", out tokenizer will output:
+#+begin_src python
+[
+    ['Lit', '2023-'],
+    ['Any'],
+    ['EitherStart'],
+    ['Lit', 'pdf'],
+    ['Lit', 'txt'],
+    ['EitherEnd']
+]
+#+end_src
+
+We use the above structure for our tokens because they represent the pattern and the arguments that pattern takes.
+
+#+name: tokenizer
+#+begin_src python :tangle ./src/ch5/tokenizer.py
+class Tokenizer():
+    def __init__(self):
+        self._setup()
+
+    def _setup(self):
+        # NOTE: We are defining the class attributes in a function
+        #       other than __init__ !
+        self.result = []
+        self.current = ""
+
+    def _add(self, thing):
+        """
+        Adds the current thing to the list of tokens.
+        Examples of 'thing': ['Any'], ['EitherStart'], ['EitherEnd']
+
+        As a special case, self._add(None) means “add the literal but nothing
+        else”
+        """
+        if len(self.current) > 0:
+            self.result.append(['Lit', self.current])
+            self.current = ''
+        if thing is not None:
+            self.result.append(thing)
+
+    def tok(self, text: str):
+        """
+        Main method of our tokenizer
+        """
+        # This method calls self._setup() at the start so that the tokenizer can
+        # be re-used
+        self._setup()
+
+        for c in text:
+            if c == '*':
+                self._add(['Any'])
+            elif c == '{':
+                self._add(['EitherStart'])
+            elif c == '}':
+                self._add(['EitherEnd'])
+            elif c == ',':
+                self._add(None)
+            elif c.isascii():
+                self.current += c
+            else:
+                raise NotImplementedError(f'what is {c} ?')
+        # NOTE: We do this to add the final 'current' to the 'result'.
+        return self.result
+#+end_src
+
+The above class based implementation is very nice:
+- we have ~_setup()~ method to *reset* the state of our /current/ and /result/ variables.
+- we have ~_add(pattern_name | None)~ to add the literal (before adding the special character, if it exists).
+
+#+name: tokenizer tests
+#+begin_src python :tangle ./src/ch5/test_tokenizer.py
+from .tokenizer import *
+
+def test_tok_empty_string():
+    assert Tokenizer().tok("") == []
+
+def test_tok_any_either():
+    assert Tokenizer().tok("*{abc,def}") == [
+        ["Any"],
+        ["EitherStart"],
+        ["Lit", "abc"],
+        ["Lit", "def"],
+        ["EitherEnd"],
+    ]
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch5/test_tokenizer.py
+#+end_src
+
+#+RESULTS:
+: ============================================================================ test session starts ============================================================================
+: platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 2 items
+:
+: src/ch5/test_tokenizer.py ..                                                                                                                                          [100%]
+:
+: ============================================================================= 2 passed in 0.01s =============================================================================
+
+*** Parsing
+
+We now need to turn the list of tokens into a tree.
+
+Just as we used a class for tokenizing, we will create one for parsing and give it a ~_parse~ method to start things off.
+This method doesn’t do any conversion itself.
+Instead, it takes a token off the front of the list and figures out which method handles tokens of that kind:
+
+#+begin_src python :tangle ./src/ch5/parser.py
+from .tokenizer import *
+from ..ch4.matcher import *
+
+class Parser():
+    def __init__(self):
+        pass
+
+    def parse(self, text: str):
+        tokens = Tokenizer().tok(text)
+        return self._parse(tokens)
+
+    def _parse(self, tokens):
+        if not tokens:
+            return Null()
+
+        car = tokens[0]
+        cdr = tokens[1:]
+        pattern = car[0]
+        if pattern == 'Any':
+            handler = self._parse_Any
+        elif pattern == 'Lit':
+            handler = self._parse_Lit
+        elif pattern == 'EitherStart':
+            handler = self._parse_EitherStart
+        else:
+            assert False, f'Unknown token type {pattern}'
+
+        return handler(car[1:], cdr)
+
+    def _parse_Any(self, arg, rest_tokens):
+        return Any(rest=self._parse(rest_tokens))
+
+    def _parse_Lit(self, arg, rest_tokens):
+        text = arg[0]
+        return Lit(chars=text, rest=self._parse(rest_tokens))
+
+    def _parse_EitherStart(self, arg, rest_tokens):
+        args = [] # with store the options of Either
+
+        for i in range(len(rest_tokens)):
+            token = rest_tokens[i]
+            if token[0] == 'EitherEnd':
+                either_end_index = i
+                break
+            else:
+                pattern = self._parse([token])
+                args.append(pattern)
+
+        return Either(*args, rest=self._parse(rest_tokens[either_end_index+1:]))
+#+end_src
+
+Now let's write a test to test our implementation of ~Parser~:
+
+#+begin_src python :tangle ./src/ch5/test_parser.py
+from .parser import *
+from ..ch4.matcher import *
+
+def test_parse_either_two_lit():
+    assert Parser().parse("{abc,def}") == Either(
+        [Lit("abc"), Lit("def")]
+    )
+#+end_src
+
+To run the above test, we need to first implement *equal* operation by the ~Pattern~ class.
+
+This test assumes we can compare ~Pattern~ objects using ====, just as we would compare numbers or strings. so we add a ~__eq__~ method to our classes:
+
+#+name: Pattern __eq__
+#+begin_src python
+def __eq__(self, other):
+    return (other is not None
+            and self.__class__ == other.__class__
+            and self.rest == other.rest)
+#+end_src
+
+#+name: Lit __eq__
+#+begin_src python
+def __eq__(self, other):
+    return super().__eq__(other) and (self.chars == other.chars)
+
+#+end_src
+
+In the above Note:
+- definition of ~__eq__(self, other)~
+- usage of ~__class__~
+- usage of ~super().__eq__(other)__~
+
+- Since we’re using inheritance to implement our matchers, we write the check for equality in two parts.
+
+  1. The parent class ~Pattern~ performs the checks that all classes need to perform (in this case, that the objects being compared have the same /concrete class/).
+
+  2. If the child class needs to do any more checking (for example, that the characters in two ~Lit~ objects are the same) it calls up to the parent method first, then adds its own tests.
+
+#+begin_src sh
+uvx pytest ./src/ch5/test_parser.py
+#+end_src
+
+#+RESULTS:
+: ============================================================================ test session starts ============================================================================
+: platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 1 item
+:
+: src/ch5/test_parser.py .                                                                                                                                              [100%]
+:
+: ============================================================================= 1 passed in 0.01s =============================================================================
+** Questions
+*** Nested Lists
+*Q.* Write a function that accepts a string representing nested lists containing numbers and returns the actual list. For example, the input [1, [2, [3, 4], 5]] should produce the corresponding Python list.
+
+*A.* convert the text into:
+#+begin_src python
+# [1, [2, [3, 4], 5]]
+# is converted to
+[
+    ['ListStart'],
+    ['Number', '1'],
+    ['ListStart'],
+    ['Number', '2'],
+    ['ListStart'],
+    ['Number', '3'],
+    ['Number', '4'],
+    ['ListEnd'],
+    ['Number', '5'],
+    ['ListEnd'],
+    ['ListEnd'],
+]
+#+end_src
+
+
+#+begin_src python :eval yes
+
+def isnumber(text: str) -> bool:
+    "Returns True if text represents a integer or decimal number"
+    try:
+        float(text)
+        return True
+    except:
+        return False
+
+def tokenize(text: str):
+    current = ""
+    result = []
+
+    def add(token):
+        """
+        Add current to 'result', then adds 'token' to 'result'
+        """
+        nonlocal current
+        if len(current) > 0:
+            result.append(['Number', current])
+            current = ''
+        if token is not None:
+            result.append(token)
+
+    for char in text:
+        if char == '[':
+            # special tokens like these signal the end of 'current'
+            # as well as need to be taken care of themselves
+            add(['ListStart'])
+        elif char == ']':
+            add(['ListEnd'])
+        elif char == ',':
+            # ',' signals the end of 'current'
+            add(None)
+        elif char.isspace():
+            # if i just ignore it
+            # then [2 2] would represent [22],
+            # but let's ignore that for now
+            continue
+        elif isnumber(current + char):
+            current += char
+        else:
+            raise NotImplementedError(f'what is this char: {char} ?')
+
+    add(None)
+    return result
+
+expected = [
+    ['ListStart'],
+    ['Number', '1'],
+    ['ListStart'],
+    ['Number', '2'],
+    ['ListStart'],
+    ['Number', '3'],
+    ['Number', '4'],
+    ['ListEnd'],
+    ['Number', '5'],
+    ['ListEnd'],
+    ['ListEnd'],
+]
+actual = tokenize('[1, [2, [3, 4], 5]]')
+print(actual == expected)
+#+end_src
+
+#+RESULTS:
+: True
+
+To parse this one has to process the list of tokens and call individual parse helper methods recursively.
+
+*** Simple Arithmetic
+*Q.*
+Write a function that accepts a string consisting of numbers and the basic arithmetic operations +, -, *, and /, and produces a nested structure showing the operations in the correct order.
+
+For example, 1 + 2 * 3 should produce ["+", 1, ["*", 2, 3]].
+
+*A.* Here operations have a relative ordering, it is NOT simply left to right.
+
+#+begin_src python
+# For  "1 + 2 * 3"
+# we get
+[
+    ['Number', '1'],
+    ['+'],
+    ['Number', '2'],
+    ['*'],
+    ['Number', '3'],
+]
+#+end_src
+
+- NOTE :: Maybe we also have brackets "(1 + 2) * 3"
+
+So, there is an ordering:
+1. Brackets
+2. Division
+3. Multiplication
+4. Addition
+5. Subtraction
+
+- Aim :: Is to convert this list of tokens into an AST, keeping in the above order of operations in mind.
+
+Let's assume our string is:
+#+begin_src python
+example = '(3 + 3) / -.6 - -10 * 1.0'
+#+end_src
+
+In the above 'example', we have operations, numbers, and spaces.
+- In this string, spaces shouldn't matter (assuming we have been given valid syntax)
+- Therefore, our string only has number stuff(digits, decimal, and negative) and operations
+
+#+name: tokenize arithmetic
+#+begin_src python :tangle ./src/ch5/tokenize_arithmetic.py
+from pprint import pprint
+
+def tokenize(text: str):
+    result = []
+    current = ''
+
+    def looking_for_number() -> bool:
+        """
+        Return true if 'result's last token is an operation
+        """
+        if not result:
+            return False
+        last_token = result[-1]
+        # check if it is a number
+        if last_token[0] == 'Number':
+            return
+
+    def add(token):
+        nonlocal current
+        if len(current) > 0:
+            result.append(['Number', current])
+            current = ''
+        if token:
+            result.append(token)
+
+    for i, char in enumerate(text):
+        if char == '(':
+            add(['('])
+        elif char == ')':
+            add([')'])
+        elif char == '+':
+            add(['+'])
+        elif char == '*':
+            add(['*'])
+        elif char == '/':
+            add(['/'])
+        elif char.isspace():
+            continue
+        # number can be '0-9',
+        elif char.isdigit():
+            current += char
+        elif char == '.':
+            if '.' not in current:
+                current += char
+            else:
+                raise Exception(f'you promised valid string')
+        elif char == '-':
+            # now either this is the minus operation
+            # or negative on a number
+            #
+            # If 'current' is empty => negative
+            # If 'current' is not empty => minus operation
+            if current:
+                add(['-'])
+            else:
+                current += '-'
+        else:
+            raise Exception(f'provided text: {text} is supposed to be valid')
+
+    add(None)
+    return result
+#+end_src
+
+#+begin_src python :eval yes :noweb yes
+<<tokenize arithmetic>>
+example = '(3 + 3) / -.6 - -10 * 1.0'
+
+pprint(tokenize(example))
+#+end_src
+
+#+RESULTS:
+#+begin_example
+[['('],
+ ['Number', '3'],
+ ['+'],
+ ['Number', '3'],
+ [')'],
+ ['/'],
+ ['Number', '-.6'],
+ ['-'],
+ ['Number', '-10'],
+ ['*'],
+ ['Number', '1.0']]
+#+end_example
+
+Now what remains is to convert this list of token into the requested AST.
+To do that we will not parse left-to-right, but we will go through the tokens parsing (ruling out) each operation one by one.
+
+#+name: parse arithmetic
+#+begin_src python :noweb yes :tangle ./src/ch5/parse_arithmetic.py
+from .tokenize_arithmetic import *
+
+<<parsed arithmetic classes>>
+
+<<handle bracket>>
+
+<<handle division>>
+
+<<handle multiplication>>
+
+<<handle addition>>
+
+<<handle subtraction>>
+
+def parse_token(token) -> Parsed:
+    if isinstance(token, Parsed):
+        return token
+    # either is an operation
+    # or is a number
+    if token[0] == 'Number':
+        return Number(value=token[1])
+
+    # token must be an operation
+    # We can't parse an operation in isolation
+    raise Exception(f'Cannot process operation: {token} in isolation')
+
+def parse(tokens):
+    tokens = handle_bracket(tokens)
+    tokens = handle_division(tokens)
+    tokens = handle_multiplication(tokens)
+    tokens = handle_addition(tokens)
+    tokens = handle_subtraction(tokens)
+    return tokens
+
+
+#+end_src
+
+#+name: parsed arithmetic classes
+#+begin_src python
+from dataclasses import dataclass
+
+class Parsed:
+    pass
+
+@dataclass
+class Number(Parsed):
+    value: str
+
+    def __call__(self):
+        return self.value
+
+class Operation(Parsed):
+    def __call__(self):
+        return [self.op, self.left(), self.right()]
+
+@dataclass
+class Add(Operation):
+    left: Parsed
+    right: Parsed
+    op: str = '+'
+
+@dataclass
+class Subtract(Operation):
+    left: Parsed
+    right: Parsed
+    op: str = '-'
+
+@dataclass
+class Multiply(Operation):
+    left: Parsed
+    right: Parsed
+    op: str = '*'
+
+@dataclass
+class Divide(Operation):
+    left: Parsed
+    right: Parsed
+    op: str = '*'
+#+end_src
+
+#+name: handle bracket
+#+begin_src python
+def find_bracket_end(tokens, bracket_open_index):
+    opened = 1
+    for i in range(bracket_open_index+1, len(tokens)):
+        token = tokens[i]
+        if isinstance(token, list) and token[0] == '(':
+            opened += 1
+        elif isinstance(token, list) and token[0] == ')':
+            opened -= 1
+            if opened == 0:
+                return i
+
+    raise Exception(f'Could not find corresponding closing bracket for open bracket at index: {bracket_open_index}')
+
+def handle_bracket(tokens):
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if isinstance(token, list) and token[0] == '(':
+            # we have to first parse everything inside this
+            # '(' ... ')' pair
+            # to find its bracket end
+            j = find_bracket_end(tokens, i)
+            tokens[i:j+1] = parse(tokens[i+1:j])
+            #
+            i = i
+        else:
+            i += 1
+    return tokens
+#+end_src
+
+#+name: handle division
+#+begin_src python
+def handle_division(tokens):
+    # a / b / c => (a / b) / c
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if isinstance(token, list) and token[0] == '/':
+            left, right = tokens[i-1], tokens[i+1]
+            tokens[i-1:i+2] = [Divide(left=parse_token(left),
+                                     right=parse_token(right))]
+            # 3 tokens replaced by 1
+            # 0 1 2 3(/) 4
+            # 0 1 2=23(/)4 3
+            i = i
+            continue
+        else:
+            i += 1
+
+    return tokens
+#+end_src
+
+#+name: handle multiplication
+#+begin_src python
+def handle_multiplication(tokens):
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if isinstance(token, list) and token[0] == '*':
+            left, right = tokens[i-1], tokens[i+1]
+            tokens[i-1:i+2] = [Multiply(left=parse_token(left),
+                                       right=parse_token(right))]
+            i = i
+            continue
+        else:
+            i += 1
+    return tokens
+#+end_src
+
+#+name: handle addition
+#+begin_src python
+def handle_addition(tokens):
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if isinstance(token, list) and token[0] == '+':
+            left, right = tokens[i-1], tokens[i+1]
+            tokens[i-1:i+2] = [Add(left=parse_token(left),
+                                  right=parse_token(right))]
+            i = i
+            continue
+        else:
+            i += 1
+    return tokens
+#+end_src
+
+#+name: handle subtraction
+#+begin_src python
+def handle_subtraction(tokens):
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if isinstance(token, list) and token[0] == '-':
+            left, right = tokens[i-1], tokens[i+1]
+            tokens[i-1:i+2] = [Subtract(left=parse_token(left),
+                                       right=parse_token(right))]
+            i = i
+            continue
+        else:
+            i += 1
+    return tokens
+#+end_src
+
+Time to test it now:
+
+#+begin_src python :tangle ./src/ch5/test_arithmetic.py
+from .parse_arithmetic import *
+from .tokenize_arithmetic import *
+from pprint import pprint
+
+def test_tokenize():
+    example = '(3 + 3) / -.6 - -10 * 1.0'
+    expected = [['('],
+                ['Number', '3'],
+                ['+'],
+                ['Number', '3'],
+                [')'],
+                ['/'],
+                ['Number', '-.6'],
+                ['-'],
+                ['Number', '-10'],
+                ['*'],
+                ['Number', '1.0']]
+    actual = tokenize(example)
+    assert actual == expected
+
+def test_parse():
+    example = '(3 + 3) / -.6 - -10 * 1.0'
+    tokens = tokenize(example)
+    actual = parse(tokens)
+    expected = [Subtract(left=Divide(left=Add(left=Number(value='3'),
+                                              right=Number(value='3'),
+                                              op='+'),
+                                     right=Number(value='-.6'),
+                                     op='*'),
+                         right=Multiply(left=Number(value='-10'),
+                                        right=Number(value='1.0'),
+                                        op='*'),
+                         op='-')]
+    assert actual == expected
+
+def test_ast():
+    example = '(3 + 3) / -.6 - -10 * 1.0'
+    tokens = tokenize(example)
+    parsed_list = parse(tokens)
+    actual = parsed_list[0]()
+    expected = ['-', ['*', ['+', '3', '3'], '-.6'], ['*', '-10', '1.0']]
+    assert actual == expected
+
+#+end_src
+
+- NOTE :: ~@dataclass~ also implements equality, good for me

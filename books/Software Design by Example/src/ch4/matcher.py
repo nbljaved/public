@@ -17,6 +17,11 @@ class Pattern:
         length_of_matched_text = self._match(text, start=0)
         return len(text) == length_of_matched_text
 
+    def __eq__(self, other):
+        return (other is not None
+                and self.__class__ == other.__class__
+                and self.rest == other.rest)
+
 class Null(Pattern):
     """
     Null Object Pattern
@@ -55,6 +60,10 @@ class Lit(Pattern):
             return None
         # passed
         return self.rest._match(text, start=end)
+
+    def __eq__(self, other):
+        return super().__eq__(other) and (self.chars == other.chars)
+    
 class Any(Pattern):
     def __init__(self, rest=None):
         super().__init__(rest)

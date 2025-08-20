@@ -1694,3 +1694,10 @@ def test_ast():
 #+end_src
 
 - NOTE :: ~@dataclass~ also implements equality, good for me
+
+* TODO Chapter 6:
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/test/
+:header-args:python: :session ch6 :results output :async yes :eval no
+:header-args:sh: :session ch6-sh :results output :async yes
+:END:

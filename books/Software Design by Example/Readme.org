@@ -1695,9 +1695,379 @@ def test_ast():
 
 - NOTE :: ~@dataclass~ also implements equality, good for me
 
-* TODO Chapter 6:
+* Chapter 6: Running Tests
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/test/
 :header-args:python: :session ch6 :results output :async yes :eval no
 :header-args:sh: :session ch6-sh :results output :async yes
+:END:
+** Summary
+:PROPERTIES:
+:ID:       09c1b9b4-68ef-4107-8e92-920827954bee
+:END:
+
+- Functions are objects you can save in data structures or pass to other functions.
+
+- Python stores local and global variables in dictionary-like structures.
+
+- A unit test performs an operation on a fixture and passes, fails, or produces an error.
+- A program can use introspection to find functions and other objects at runtime.
+
+#+caption: Concept map
+[[file:images/Chapter_6:/2025-08-21_09-57-47_screenshot.png]]
+
+When reviewing the ideas introduced in this chapter, it’s worth remembering /Clarke’s Third Law/, which states that any sufficiently advanced technology is indistinguishable from magic.
+
+The same is true of programming tricks like *introspection*: the code that finds tests dynamically seems transparent to an expert who _understands that CODE IS DATA_, but can be incomprehensible to a novice.
+
+** Theory
+*** Storing and running tests
+A function is just an object that we can assign to a variable. We can also store them in lists just like numbers or strings.
+
+#+begin_src python :eval yes
+def first():
+    print("First")
+
+def second():
+    print("Second")
+
+def third():
+    print("Third")
+
+everything = [first, second, third]
+for func in everything:
+    func()
+#+end_src
+
+#+RESULTS:
+: First
+: Second
+: Third
+
+However, we have to be able to call the functions in the same way in order for this trick to work, which means they must have the same signature.
+
+Now suppose we have a function we want to test:
+
+#+name: def sign
+#+begin_src python
+def sign(value):
+    if value < 0:
+        return -1
+    else:
+        return 1
+#+end_src
+
+and some functions that test it (two of which contain deliberate errors):
+
+#+name: some-test-cases
+#+begin_src python
+def test_sign_negative():
+    assert sign(-3) == -1
+
+def test_sign_positive():
+    assert sign(19) == 1
+
+def test_sign_zero():
+    assert sign(0) == 0
+
+def test_sign_error():
+    assert sgn(1) == 1
+#+end_src
+
+- Fixture :: The thing on which a test is run, such as the parameters to the function being tested or the file being processed.
+
+- Each test does something to a *fixture* (such as the number 19) and uses assertions to compare the /actual/ result against the /expected/ result. The outcome of each test can be:
+
+  * Pass :: the test subject works as expected.
+  * Fail :: something is wrong with the test subject.
+  * Error :: something is wrong in the test itself, which means we don’t know if the thing we’re testing is working properly or not.
+
+- We can implement this classification scheme as follows:
+
+  1. If a test function completes without /raising/ any kind of /exception/, it passes. (We don’t care if it returns something, but _by convention_ tests don’t return a value.)
+
+  2. If the function raises an =AssertionError= exception, then the test has failed. Python’s ~assert~ statement does this automatically when the condition it is checking is false, so almost all tests use ~assert~ for checks.
+
+  3. If the function raises any other kind of exception, then we assume the test itself is broken and count it as an error.
+
+Translating these rules into code gives us the function 'run_tests' that runs every test in a list and counts how many outcomes of each kind it sees:
+
+#+name: run_tests
+#+begin_src python
+def run_tests(all_tests):
+    results = {"pass": 0, "fail": 0, "error": 0}
+    for test in all_tests:
+        try:
+            test()
+            results["pass"] += 1
+        except AssertionError:
+            results["fail"] += 1
+        except Exception:
+            results["error"] += 1
+    print(f"pass {results['pass']}")
+    print(f"fail {results['fail']}")
+    print(f"error {results['error']}")
+#+end_src
+
+We use run_tests by putting all of our test functions into a list and passing that to the test runner:
+
+#+begin_src python :noweb yes :eval yes
+<<def sign>>
+<<some-test-cases>>
+
+<<run_tests>>
+
+TESTS = [
+    test_sign_negative,
+    test_sign_positive,
+    test_sign_zero,
+    test_sign_error
+]
+
+run_tests(TESTS)
+
+#+end_src
+
+#+RESULTS:
+: pass 2
+: fail 1
+: error 1
+
+- NOTE :: *Independence*
+  Our function runs tests in the order they appear in the list.
+
+  The tests _SHOULD NOT_ rely on that: every unit test should work independently so that an error or failure in an early test doesn’t affect other tests’ behavior.
+
+*** Finding functions
+
+Making lists of functions is clumsy and error-prone: sooner or later we’ll add a function to TESTS twice or forget to add it at all.
+
+We’d therefore like our test runner to find tests for itself, which it can do by exploiting the fact that Python stores variables in a structure similar to a dictionary.
+
+#+caption: Using the 'globals' function
+#+begin_src python :eval yes :session ch6-globals
+import pprint
+pprint.pprint(globals())
+#+end_src
+
+#+RESULTS:
+#+begin_example
+{'__PYTHON_EL_eval': <function __PYTHON_EL_eval at 0x780ae95c2ac0>,
+ '__PYTHON_EL_eval_file': <function __PYTHON_EL_eval_file at 0x780ae95c2b60>,
+ '__PYTHON_EL_native_completion_setup': <function __PYTHON_EL_native_completion_setup at 0x780ae95c2f20>,
+ '__annotations__': {},
+ '__builtins__': <module 'builtins' (built-in)>,
+ '__doc__': None,
+ '__loader__': <class '_frozen_importlib.BuiltinImporter'>,
+ '__name__': '__main__',
+ '__org_babel_python_format_value': <function __org_babel_python_format_value at 0x780ae95c2980>,
+ '__package__': None,
+ '__spec__': None,
+ 'pprint': <module 'pprint' from '/gnu/store/c5qarpvwzcz1idryvvpiqd7738jn4rs1-python-3.11.11/lib/python3.11/pprint.py'>,
+ 'readline': <module 'readline' from '/gnu/store/c5qarpvwzcz1idryvvpiqd7738jn4rs1-python-3.11.11/lib/python3.11/lib-dynload/readline.cpython-311-x86_64-linux-gnu.so'>,
+ 'tty': <module 'tty' from '/gnu/store/c5qarpvwzcz1idryvvpiqd7738jn4rs1-python-3.11.11/lib/python3.11/tty.py'>}
+#+end_example
+
+As the output shows, ~globals~ is a dictionary containing all the variables in the program’s /global scope/.
+
+(See how the module ~pprint~ was imported)
+
+Since we just started the interpreter, all we see are the variables that Python defines automatically.
+
+*Q.* What happens when we define a variable of our own ?
+
+#+begin_src python :eval yes :session ch6-globals
+import pprint
+my_variable = 123
+def my_function(x,y):
+    pass
+pprint.pprint(globals())
+#+end_src
+
+#+RESULTS:
+#+begin_example
+{'__PYTHON_EL_eval': <function __PYTHON_EL_eval at 0x780ae95c2ac0>,
+ '__PYTHON_EL_eval_file': <function __PYTHON_EL_eval_file at 0x780ae95c2b60>,
+ '__PYTHON_EL_native_completion_setup': <function __PYTHON_EL_native_completion_setup at 0x780ae95c2f20>,
+ '__annotations__': {},
+ '__builtins__': <module 'builtins' (built-in)>,
+ '__doc__': None,
+ '__loader__': <class '_frozen_importlib.BuiltinImporter'>,
+ '__name__': '__main__',
+ '__org_babel_python_format_value': <function __org_babel_python_format_value at 0x780ae95c2980>,
+ '__package__': None,
+ '__spec__': None,
+ 'my_function': <function my_function at 0x780ae95c2e80>,
+ 'my_variable': 123,
+ 'pprint': <module 'pprint' from '/gnu/store/c5qarpvwzcz1idryvvpiqd7738jn4rs1-python-3.11.11/lib/python3.11/pprint.py'>,
+ 'readline': <module 'readline' from '/gnu/store/c5qarpvwzcz1idryvvpiqd7738jn4rs1-python-3.11.11/lib/python3.11/lib-dynload/readline.cpython-311-x86_64-linux-gnu.so'>,
+ 'tty': <module 'tty' from '/gnu/store/c5qarpvwzcz1idryvvpiqd7738jn4rs1-python-3.11.11/lib/python3.11/tty.py'>}
+#+end_example
+
+If function names are just variables and a program’s variables are stored in a dictionary, we can loop over that dictionary to find all the functions whose names start with 'test_':
+
+#+name: def find-tests
+#+begin_src python
+def find_tests(prefix):
+    for (name, func) in globals().items():
+        if name.startswith(prefix):
+            print(name, func)
+#+end_src
+
+#+begin_src python :noweb yes :eval yes
+<<def find-tests>>
+find_tests("test_")
+#+end_src
+
+#+RESULTS:
+: test_sign_negative <function test_sign_negative at 0x7eefe1110900>
+: test_sign_positive <function test_sign_positive at 0x7eefe1110cc0>
+: test_sign_zero <function test_sign_zero at 0x7eefe1110d60>
+: test_sign_error <function test_sign_error at 0x7eefe1110e00>
+
+- The ~find_test~ function found the variable/functions in our python session (named 'ch6') whose name stated with 'test_'.
+
+  The hexadecimal numbers in the output show where each function object is stored in memory.
+
+  Having a running program find things in itself like this is called *introspection*, and is the key to many of the designs in upcoming chapters.
+
+Combining introspection with the pass-fail-error pattern of the previous section gives us something that finds test functions, runs them, and summarizes their results:
+
+#+name: def run_tests
+#+begin_src python
+def run_tests():
+    results = {"pass": 0, "fail": 0, "error": 0}
+    for (name, test) in globals().items():
+        if not name.startswith("test_") or not callable(test):
+            continue
+        try:
+            test()
+            results["pass"] += 1
+        except AssertionError:
+            results["fail"] += 1
+        except Exception:
+            results["error"] += 1
+    print(f"pass {results['pass']}")
+    print(f"fail {results['fail']}")
+    print(f"error {results['error']}")
+
+#+end_src
+
+In the above program we use ~callable~ to check if 'test' is actually a callable or not.
+
+#+caption: Reason to use ~callable~
+#+begin_src python
+type(3)
+# => <class 'int'>
+
+def example():
+    pass
+
+type(example)
+# => <class 'function'>
+
+# Built-in functions have different type
+type(len)
+# => <class 'builtin_function_or_method'>
+
+# Therefore, it is safert to use 'callable' to check if something can be called
+callable(example)
+# => True
+callable(len)
+# => True
+#+end_src
+
+** Questions
+*** Looping over globals
+
+*Q.* What happens if you run this code?
+#+begin_src python :eval yes :session ch6-looping
+for name in globals():
+    print(name)
+#+end_src
+
+#+RESULTS:
+: RuntimeError: dictionary changed size during iteration
+
+*Q.* What happens if you run this code instead?
+#+begin_src python :eval yes :session ch6-looping
+name = None
+for name in globals():
+    print(name)
+#+end_src
+
+#+RESULTS:
+#+begin_example
+__name__
+__doc__
+__package__
+__loader__
+__spec__
+__annotations__
+__builtins__
+tty
+__PYTHON_EL_eval
+__PYTHON_EL_eval_file
+readline
+__org_babel_python_format_value
+__PYTHON_EL_native_completion_setup
+name
+#+end_example
+
+*Q.* Why are the two different ?
+
+*A.*
+
++ In the first example:
+
+  When the =for= loop starts, =name= is not yet a variable in the global scope.
+
+  As the loop iterates and assigns values to =name= (e.g., name = "__name__", name = "__doc__"), it implicitly /creates/ the =name= variable in the global scope.
+
+  Creating a new global variable adds an entry to the ~globals()~ dictionary.
+  Python disallows modifying a dictionary (like ~globals()~) while it is being iterated over, leading to a =RuntimeError=.
+
+  - NOTE :: We get the same error EVEN IF we had used ~globals().items()~
+
++ In the second example:
+  The line ~name = None~ /before/ the loop explicitly creates the =name= variable in the global scope.
+
+  When the =for= loop begins, =name= already exists in the =globals()= dictionary. The loop then simply /reassigns/ the value of the /existing/ =name= variable in each iteration.
+
+  This is not a modification of the dictionary's structure (no new key is added or removed during iteration), so no =RuntimeError= occurs.
+
+*** Local Variables
+Python has a function called ~locals~ that returns all the variables defined in the current /local scope/.
+(local -- Referring to the current or innermost scope in a program.)
+
+
+
+1. Predict what the code below will print before running it. When does the variable i first appear and is it still there in the final line of output?
+
+2. Run the code and compare your prediction with its behavior.
+
+#+begin_src python :eval yes :session ch6-locals
+def show_locals(low, high):
+    print(f"start: {locals()}")
+    for i in range(low, high):
+        print(f"loop {i}: {locals()}")
+    print(f"end: {locals()}")
+
+show_locals(1, 3)
+#+end_src
+
+#+RESULTS:
+: start: {'low': 1, 'high': 3}
+: loop 1: {'low': 1, 'high': 3, 'i': 1}
+: loop 2: {'low': 1, 'high': 3, 'i': 2}
+: end: {'low': 1, 'high': 3, 'i': 2}
+
+The point here is that =i= still remains ever after the end of the for-loop.
+This is because (I think) in python the innermost scope is the function scope, i.e. the for-loop doesn't have its own scope.
+
+* TODO Chapter 7: Running Tests
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/interp/
+:header-args:python: :session ch7 :results output :async yes :eval no
+:header-args:sh: :session ch7-sh :results output :async yes
 :END:

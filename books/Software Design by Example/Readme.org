@@ -2065,9 +2065,336 @@ show_locals(1, 3)
 The point here is that =i= still remains ever after the end of the for-loop.
 This is because (I think) in python the innermost scope is the function scope, i.e. the for-loop doesn't have its own scope.
 
-* TODO Chapter 7: Running Tests
+* Chapter 7: Running Tests
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/interp/
 :header-args:python: :session ch7 :results output :async yes :eval no
 :header-args:sh: :session ch7-sh :results output :async yes
+:END:
+
+** Summary
+:PROPERTIES:
+:ID:       0a6eb5bf-e600-4902-9b35-011cc152a755
+:END:
+- Compilers and interpreters are just programs.
+- Basic arithmetic operations are just functions that have special notation.
+- Programs can be represented as trees, which can be stored as nested lists.
+
+- Interpreters recursively _dispatch_ operations to functions that implement low-level steps.
+
+- Programs store variables in /stacked/ dictionaries called *environments*.
+
+- One way to evaluate a program's design is to ask how extensible it is.
+
+#+caption: Interpreter concept map
+[[file:images/Chapter_7:_Running_Tests/2025-08-25_10-57-23_screenshot.png]]
+
+The central idea is that a program is just another kind of data.
+Please see Appendix B for extra material related to these ideas.
+
+** Theory
+*** Intro
+
+Most real programming languages have two parts:
+1. a parser that translates the source code into a data structure,
+2. and a runtime that executes the instructions in that data structure.
+
+#+caption: Two ways to run Code
+#+begin_quote
+A compiler translates a program into runnable instructions before the program runs, while an interpreter generates instructions /on the fly/ as the program is running.
+
+The differences between the two are BLURRY in practice:
+
+for example, Python translates the instructions in a program into instructions as it loads files, but saves those instructions in .pyc files to save itself work the next time it runs the program.
+#+end_quote
+
+*** Expressions
+:PROPERTIES:
+:ID:       ee521d45-e4ef-4b47-8ead-b35cae5944e9
+:END:
+
+Let’s start by building something that can evaluate simple *expressions* such as 1+2 or abs(-3.5).
+
+We represent each expression as a list with the name of the operation as the first item and the values to be operated on as the other items. If we have multiple operations, we use nested lists:
+
+#+begin_src python
+["add", 1, 2]            # 1 + 2
+["abs", -3.5]            # abs(-3.5)
+["add", ["abs", -5], 9]  # abs(-5) + 9
+#+end_src
+
+#+name: def do_add
+#+begin_src python
+def do_add(args):
+    assert len(args) == 2
+    left = do(args[0])
+    right = do(args[1])
+    return left + right
+#+end_src
+
+#+name: def do_abs
+#+begin_src python
+def do_abs(args):
+    assert len(args) == 1
+    val = do(args[0])
+    return abs(val)
+#+end_src
+
+- NOTE :: that ~do_abs~ and ~do_add~ have the same signature. As with the unit testing functions in [[*Chapter 6: Running Tests][Chapter 6: Running Tests]], this allows us to call them interchangeably.
+
+*Q.* So how does ~do~ work ?
+
+*A.* It starts by checking if its input is an integer. If so, it returns that value right away because integers “evaluate” to themselves. Otherwise, ~do~ checks that its parameter is a list and then uses the first value in the list to decide what other function to call.
+
+#+name: do
+#+begin_src python
+def do(expr):
+    # Integers evaluate to themselves.
+    if isinstance(expr, int):
+        return expr
+
+    # Lists trigger function calls.
+    assert isinstance(expr, list)
+    if expr[0] == "abs":
+        return do_abs(expr[1:])
+    if expr[0] == "add":
+        return do_add(expr[1:])
+    assert False, f"Unknown operation {expr[0]}"
+
+#+end_src
+
+This lookup-and-call process is called *dynamic dispatch*, since the program decides who to give work to on the fly.
+
+It leads to a situation where ~do~ calls a function like ~do_add~, which in turn calls ~do~, which may then call ~do_add~ (or something other function) and so on.
+
+- Dynamic dispatch ::
+  To find a function or a property of an /object/ by name while a program is running.
+
+  For example, instead of getting a specific property of an object using ~obj.name~, a program might use ~obj[someVariable]~, where someVariable could hold "name" or some other property name.
+
+With all of this code in place, the main body of the program can read the file containing the instructions to execute, call do, and print the result:
+
+#+begin_src python :tangle ./src/ch7/main.py :noweb yes
+import sys
+import json
+
+<<def do_add>>
+
+<<def do_abs>>
+
+<<do>>
+
+def main():
+    assert len(sys.argv) == 2, "Usage: expr.py filename"
+    with open(sys.argv[1], "r") as reader:
+        program = json.load(reader)
+    result = do(program)
+    print(f"=> {result}")
+
+if __name__ == "__main__":
+    main()
+#+end_src
+
+#+begin_src python :tangle ./src/ch7/expr.tll
+["add", ["abs", -3], 2]
+#+end_src
+
+#+begin_src sh
+uv run ./src/ch7/main.py ./src/ch7/expr.tll
+#+end_src
+
+#+RESULTS:
+: => 5
+
+- Python reads expr.py, turns it into a data structure with operation identifiers and constants, and uses those operation identifiers to decide what functions to call.
+
+  The functions inside Python are written in C and have been compiled to machine instructions, but the cycle of lookup and call _IS EXACTLY THE SAME_ as it is in our little interpreter.
+
+*** Variables
+
+Doing arithmetic on constants is a start, but our programs will be easier to read if we can define variables that give names to values.
+
+We can add variables to our interpreter by passing around a dictionary containing all the variables seen so far.
+
+Such a dictionary is sometimes called an *environment* because it is the setting in which expressions are evaluated; the dictionaries returned by the ~globals()~ and ~locals()~ functions introduced in Chapter 6 are both environments.
+
+Let’s modify do_add, do_abs, do, and main to take an environment as an extra parameter and pass it on as needed:
+
+#+name: def do; env, expr
+#+begin_src python
+def do(env, expr):
+    # Integers evaluate to themselves.
+    if isinstance(expr, int):
+        return expr
+
+    # Lists trigger function calls.
+    assert isinstance(expr, list)
+    if expr[0] == "abs":
+        return do_abs(env, expr[1:])
+    if expr[0] == "add":
+        return do_add(env, expr[1:])
+    if expr[0] == "get":
+        return do_get(env, expr[1:])
+    if expr[0] == "seq":
+        return do_seq(env, expr[1:])
+    if expr[0] == "set":
+        return do_set(env, expr[1:])
+    assert False, f"Unknown operation {expr[0]}"
+#+end_src
+
+#+name: do this and that
+#+begin_src python
+def do_add(env, args):
+    assert len(args) == 2
+    left = do(env, args[0])
+    right = do(env, args[1])
+    return left + right
+
+def do_abs(env, args):
+    assert len(args) == 1
+    val = do(env, args[0])
+    return abs(val)
+
+# Looking up variables when we need their values is straightforward. We check
+# that we have a variable name and that the name is in the environment, then
+# return the stored value:
+def do_get(env, args):
+    assert len(args) == 1
+    assert isinstance(args[0], str)
+    assert args[0] in env, f"Unknown variable {args[0]}"
+    return env[args[0]]
+
+# To define a new variable or change an existing one, we evaluate an expression
+# and store its value in the environment:
+def do_set(env, args):
+    assert len(args) == 2
+    assert isinstance(args[0], str)
+    value = do(env, args[1])
+    env[args[0]] = value
+    return value
+
+# We need to add one more function to make this all work. Our programs no longer
+# consist of a single expression; instead, we may have several expressions that
+# set variables’ values and then use them in calculations. To handle this, we
+# add a function do_seq that runs a sequence of expressions one by one. This
+# function is our first piece of control flow: rather than calculating a value
+# itself, it controls when and how other expressions are evaluated. Its
+# implementation is:
+def do_seq(env, args):
+    assert len(args) > 0
+    for item in args:
+        result = do(env, item)
+    return result
+
+#+end_src
+
+#+begin_src python :tangle ./src/ch7/main2.py :noweb yes
+import sys
+import json
+
+<<do this and that>>
+
+<<def do; env, expr>>
+
+def main():
+    assert len(sys.argv) == 2, "Usage: expr.py filename"
+    with open(sys.argv[1], "r") as reader:
+        program = json.load(reader)
+    env = {} # initialize the environment
+    result = do(env, program)
+    print(f"=> {result}")
+
+if __name__ == "__main__":
+    main()
+
+#+end_src
+
+#+begin_src python :tangle ./src/ch7/expr2.tll
+[
+    "seq",
+    ["set", "alpha", 1],
+    ["set", "beta", 2],
+    ["add", ["get", "alpha"], ["get", "beta"]]
+]
+#+end_src
+
+#+begin_src sh
+uv run ./src/ch7/main2.py ./src/ch7/expr2.tll
+#+end_src
+
+#+RESULTS:
+: => 3
+
+#+caption: Everything is an expression
+[[file:images/Chapter_7:_Running_Tests/2025-08-25_11-29-15_screenshot.png]]
+
+*** Introspection
+:PROPERTIES:
+:ID:       122a8a24-1485-43e1-9e20-ce9512e9f212
+:END:
+
+In [[def do; env, expr]], the sequence of =if= statements that decide what function to call is becoming unwieldy.
+
+We can replace this by using *introspection* to create a lookup table that stores every function whose name starts with 'do_'
+
+- Introspection/Reflection ::
+  To inspect the properties of a running program in a generic way.
+  Reflection relies on the fact that a program is just another data structure.
+
+  #+caption: Dynamically-generated function lookup table
+  [[file:images/Chapter_7:_Running_Tests/2025-08-25_13-32-29_screenshot.png]]
+
+We wanna map functions like 'do_operationName' to the name 'operationName' so that we can get rid of our =if= statements.
+
+#+begin_src python :tangle ./src/ch7/main3.py :noweb yes
+import sys
+import json
+
+<<do this and that>>
+
+OPS = {
+    name.replace('do_', ''): func
+    for name, func in globals().items()
+    if name.startswith('do_') and callable(func)
+}
+
+def do(env, expr):
+    # Integers evaluate to themselves.
+    if isinstance(expr, int):
+        return expr
+
+     # Lists trigger function calls.
+    assert isinstance(expr, list)
+    assert expr[0] in OPS, f"Unknown operation {expr[0]}"
+    func = OPS[expr[0]]
+    return func(env, expr[1:])
+
+def main():
+    assert len(sys.argv) == 2, "Usage: expr.py filename"
+    with open(sys.argv[1], "r") as reader:
+        program = json.load(reader)
+    env = {} # initialize the environment
+    result = do(env, program)
+    print(f"=> {result}")
+
+if __name__ == "__main__":
+    main()
+#+end_src
+
+As with unit test functions in [[*Chapter 6: Running Tests][Chapter 6: Running Tests]] , the ~do_*~ functions MUST HAVE exactly the same signature so that we can call any of them with an environment and a list of arguments _without knowing exactly which function we’re calling_.
+
+And as with finding tests, introspection is more reliable than a hand-written lookup table BUT is harder to understand.
+
+#+begin_src sh
+uv run ./src/ch7/main3.py ./src/ch7/expr2.tll
+#+end_src
+
+#+RESULTS:
+: => 3
+
+* TODO Chapter 8: Functions and Closures
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/func/
+:header-args:python: :session ch8 :results output :async yes :eval no
+:header-args:sh: :session ch8-sh :results output :async yes
 :END:

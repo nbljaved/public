@@ -2065,7 +2065,7 @@ show_locals(1, 3)
 The point here is that =i= still remains ever after the end of the for-loop.
 This is because (I think) in python the innermost scope is the function scope, i.e. the for-loop doesn't have its own scope.
 
-* Chapter 7: Running Tests
+* Chapter 7: An Interpreter
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/interp/
 :header-args:python: :session ch7 :results output :async yes :eval no
@@ -2392,9 +2392,376 @@ uv run ./src/ch7/main3.py ./src/ch7/expr2.tll
 #+RESULTS:
 : => 3
 
-* TODO Chapter 8: Functions and Closures
+* Chapter 8: Functions and Closures
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/func/
 :header-args:python: :session ch8 :results output :async yes :eval no
 :header-args:sh: :session ch8-sh :results output :async yes
+:END:
+
+** Summary
+:PROPERTIES:
+:ID:       73897404-84eb-4888-97b6-1ae9846fe82e
+:END:
+
+- When we define a function, our programming system _saves instructions for later use_.
+- Since functions are just data, we can separate creation from naming.
+
+- Most programming languages use *eager evaluation*, in which arguments are evaluated before a function is called.
+
+- Programming languages can also use lazy evaluation, in which expressions are passed to functions for just-in-time evaluation.
+
+- Every call to a function creates a new stack frame on the call stack.
+
+- When a function looks up variables it checks its own stack frame and the global frame.
+
+- A *closure* stores the variables referenced in a particular scope.
+
+#+caption: Concept Map
+[[file:images/Chapter_8:_Functions_and_Closures/2025-08-25_14-31-09_screenshot.png]]
+
+** Theory
+*** Intro
+
+One way to evaluate the design of a piece of software is to ask how extensible it is, i.e., how easily we can add or change things.
+
+The answer for the interpreter of [[*Chapter 7: An Interpreter][Chapter 7: An Interpreter]] is “pretty easily” but the answer for the little language it interprets is “not at all”, because users cannot define new operations in the little language itself.
+
+We need to give them a way to define and call functions.
+
+Doing this will take less than 60 lines of code, and once we understand how definition works, we will be able to understand how an advanced feature of most modern programming languages works as well.
+
+*** Definition and Storage
+
+For the following function:
+
+#+begin_src python
+def same(num):
+    return num
+#+end_src
+
+Since a function is just another kind of object, we can define it on its own without naming it:
+
+#+caption: [func, args, body]
+#+begin_src python
+["func", ["num"], ["get", "num"]]
+#+end_src
+
+To save the function for later use, we simply assign it to a name as we would assign any other value:
+
+#+begin_src python
+["set", "same", ["func", ["num"], ["get", "num"]]]
+#+end_src
+
+*** Calling Functions
+In Python, we would call this function as ~same(3)~.
+
+Our little language requires us to specify an operator explicitly, so we write the call as:
+
+#+begin_src python
+["call", "same", 3]
+#+end_src
+
+To make =call= work the way most programmers expect, we need to implement *scope* so that the parameters and variables used in a function aren’t confused with those defined outside it.
+
+In other words, we need to prevent name collision.
+
+When a function is /called/ with one or more expressions as arguments, we will:
+
+1. Evaluate all of these expressions.
+2. Look up the function.
+3. Create a new environment from the function’s parameter names and the expressions’ values.
+4. Call ~do~ to run the function’s action and capture the result.
+5. Discard the environment created in Step 3.
+6. Return the function’s result.
+
+#+caption: Eager and Lazy.
+#+begin_quote
+
+Evaluating a function’s arguments before we run it is called *eager evaluation*.
+
+We could instead use *lazy evaluation*, in which case we would pass the argument sub-lists into the function and let it evaluate them when it needed their values.
+
+Python and most other languages are eager, but a handful of languages, such as R, are lazy.
+
+It’s a bit more work, but it allows the function to inspect the expressions it has been called with and to decide how to handle them.
+
+To make this work, the environment must be a /list of dictionaries/ instead of a single dictionary.
+
+This list is the *call stack* of our program, and each dictionary in it is usually called a *stack frame*. When a function wants the value associated with a name, we look through the list from the most recent dictionary to the oldest.
+
+#+end_quote
+
+#+caption: Scoping Rules
+#+begin_quote
+
+Searching through all active stack frames for a variable is called *dynamic scoping*.
+
+In contrast, most programming languages used *lexical scoping*, which figures out what a variable name refers to based on the structure of the program text.
+
+The former is easier to implement (which is why we’ve chosen it); the latter is easier to understand, particularly in large programs. [Nystrom2021] has an excellent step-by-step explanation of how to build lexical scoping.
+
+#+end_quote
+
+The completed implementation of function definition is:
+
+#+name: def do_func
+#+begin_src python
+def do_func(env, args):
+    assert len(args) == 2
+    params = args[0]
+    body = args[1]
+    return ['func', params, body]
+
+# NOTE: How the above function just checks that function has the correct shape
+# and just returns the same value as earlier.
+
+# This is what we mean when we say that a function:
+# saves instructions for later use.
+#+end_src
+
+and the completed implementation of function call is:
+
+#+name: def do_call
+#+begin_src python
+def do_call(env, args):
+    # set up the call
+    assert len(args) >= 1
+    name = args[0]
+    arguments = [do(env, a) for a in args[1:]]
+
+    # find the function
+    func = do_get(env, [name])
+    # NOTE :: In the above, if I wrote list(name), then
+    # we would get ['a', 'b', 'c'] for the name='abc' !!
+    assert isinstance(func, list) and (func[0] == 'func')
+    params, body = func[1], func[2]
+    assert len(arguments) == len(params)
+
+    # Run in new environment
+    env.append(dict(zip(params, arguments))) # Noice
+    result = do(env, body)
+    env.pop()
+
+    # Report
+    return result
+#+end_src
+
+#+begin_src python :tangle ./src/ch8/test.tll
+["seq",
+  ["set", "double",
+    ["func", ["num"],
+      ["add", ["get", "num"], ["get", "num"]]
+    ]
+  ],
+  ["set", "a", 1],
+  ["repeat", 4, ["seq",
+    ["set", "a", ["call", "double", ["get", "a"]]],
+    ["print", ["get", "a"]]
+  ]]
+]
+#+end_src
+
+We also need to define a ~do_repeat~ and ~do_print~ for our test case:
+
+#+name: do_repeat and do_print
+#+begin_src python
+def do_repeat(env, args):
+    # ['repeat', times, body]
+    assert len(args) == 2
+
+    times = do(env, args[0])
+    body = args[1]
+
+    for _ in range(times):
+        do(env, body)
+
+def do_print(env, args):
+    # ['print', thing]
+    assert len(args) == 1
+    value = do(env, args[0])
+    print(value)
+#+end_src
+
+We also need to redefine ~do_get~, ~do_set~, our initial environment etc.
+
+#+name: redefined do_blah
+#+caption: changed do_get, do_set
+#+begin_src python
+#from pprint import pprint
+
+def do_add(env, args):
+    assert len(args) == 2
+    left = do(env, args[0])
+    right = do(env, args[1])
+    return left + right
+
+def do_abs(env, args):
+    assert len(args) == 1
+    val = do(env, args[0])
+    return abs(val)
+
+# Changed !
+def do_get(env, args):
+    # pprint('do_get')
+    # pprint(f'env: {env}')
+    # pprint(f'args: {args}')
+    assert len(args) == 1
+    assert isinstance(args[0], str)
+    name = args[0]
+    for d in reversed(env):
+        if name in d:
+            return d[name]
+    raise Exception(f'nothing defined with name: {name}')
+
+# Changed !
+def do_set(env, args):
+    assert len(args) == 2
+    assert isinstance(args[0], str)
+    value = do(env, args[1])
+    env[-1][args[0]] = value
+    return value
+
+def do_seq(env, args):
+    assert len(args) > 0
+    for item in args:
+        result = do(env, item)
+    return result
+
+#+end_src
+
+#+caption: environment is now a list of dicts
+#+begin_src python :tangle ./src/ch8/main.py :noweb yes
+import sys
+import json
+
+<<redefined do_blah>>
+
+<<def do_func>>
+
+<<def do_call>>
+
+<<do_repeat and do_print>>
+
+OPS = {
+    name.replace('do_', ''): func
+    for name, func in globals().items()
+    if name.startswith('do_') and callable(func)
+}
+
+def do(env, expr):
+    # Integers evaluate to themselves.
+    if isinstance(expr, int):
+        return expr
+
+     # Lists trigger function calls.
+    assert isinstance(expr, list)
+    assert expr[0] in OPS, f"Unknown operation {expr[0]}"
+    func = OPS[expr[0]]
+    # pprint(f'Calling func: {expr[0]}')
+    # pprint(f'with args: {expr[1:]}')
+    return func(env, expr[1:])
+
+def main():
+    assert len(sys.argv) == 2, "Usage: expr.py filename"
+    with open(sys.argv[1], "r") as reader:
+        program = json.load(reader)
+    # NOTE: list(dict()) => []
+    env = [dict()] # Changed !
+
+    result = do(env, program)
+    print(f"=> {result}")
+
+if __name__ == "__main__":
+    main()
+#+end_src
+
+
+#+begin_src sh
+uv run ./src/ch8/main.py ./src/ch8/test.tll
+#+end_src
+
+#+RESULTS:
+: 2
+: 4
+: 8
+: 16
+: => None
+
+- NOTE :: Once again, Python and other languages do more or less what we’ve done here.
+
+  - When we define a function, the interpreter saves the instructions in a lookup table.
+
+  - When we call a function at runtime, the interpreter finds the function in the table, creates a new stack frame, executes the instructions in the function, and pops the frame off the stack.
+
+*** Closures
+:PROPERTIES:
+:ID:       eae5e10f-5a58-4670-b02c-818121f044e4
+:END:
+
+#+begin_src python :eval yes
+def make_hidden(thing):
+    def _inner():
+        return thing
+    return _inner
+
+has_secret = make_hidden(1 + 2)
+print("hidden thing is", has_secret())
+#+end_src
+
+#+RESULTS:
+: hidden thing is 3
+
+In the above code, the inner function still has access to the value of thing, but nothing else in the program does.
+
+A computer scientist would say that the inner function /captures/ the variables in the enclosing function to create a *closure*.
+
+- Closure ::
+  A record that stores a /function/ _AND_ /its environment/ so that variables that were in scope when the function was defined can still be accessed from within the function even if they are no longer visible to other parts of the program.
+
+- One common use of closures is to turn a function that needs many arguments into one that needs fewer, i.e., to create a function /now/ that remembers some values it’s supposed to use /later/.
+
+- Closures are also another way to implement objects.
+
+  Instead of building a dictionary ourselves as we did in [[*Chapter 2: Objects and Classes][Chapter 2: Objects and Classes]], we use the one that Python creates behind the scenes to implement a closure.
+
+  In the code below, for example, the function make_object creates a dictionary containing two functions:
+
+  #+begin_src python :eval yes
+  def make_object(initial_value):
+      private = {"value": initial_value}
+
+      def getter():
+          return private["value"]
+
+      def setter(new_value):
+          private["value"] = new_value
+
+      return {"get": getter, "set": setter}
+
+  object = make_object(00)
+  print("initial value", object["get"]())
+  object["set"](99)
+  print("object now contains", object["get"]())
+
+  #+end_src
+
+  #+RESULTS:
+  : initial value 0
+  : object now contains 99
+
+#+caption: Implementing objects using closures.
+[[file:images/Chapter_8:_Functions_and_Closures/2025-08-25_17-34-08_screenshot.png]]
+
+When this code runs, Python creates a closure that is shared by the two functions (Figure 8.2).
+
+The closure has a key "private"; there is nothing special about this name, but nothing in the program can see the data in the closure except the two functions.
+
+We could add more keys to this dictionary to create more complex objects and build an entire system of objects and classes this way.
+
+* TODO Chapter 9: Protocols
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/protocols/
+:header-args:python: :session ch9 :results output :async yes :eval no
+:header-args:sh: :session ch9-sh :results output :async yes
 :END:

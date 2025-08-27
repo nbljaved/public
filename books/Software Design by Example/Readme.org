@@ -2759,9 +2759,517 @@ The closure has a key "private"; there is nothing special about this name, but n
 
 We could add more keys to this dictionary to create more complex objects and build an entire system of objects and classes this way.
 
-* TODO Chapter 9: Protocols
+* Chapter 9: Protocols
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/protocols/
 :header-args:python: :session ch9 :results output :async yes :eval no
 :header-args:sh: :session ch9-sh :results output :async yes
+:END:
+
+** Summary
+:PROPERTIES:
+:ID:       9c0cb28c-9195-436e-b67f-35a07fd53eae
+:END:
+
+- Temporarily replacing functions with mock objects can simplify testing.
+- Mock objects can record their calls and/or return variable results.
+
+- Python defines protocols so that code can be triggered by keywords in the language.
+- Use the /context manager protocol/ to ensure cleanup operations always execute.
+
+- Use decorators to wrap functions after defining them.
+- Use closures to create decorators that take extra parameters.
+
+- Use the iterator protocol to make objects work with for loops.
+
+#+caption: Concept map
+[[file:images/Chapter_9:_Protocols/2025-08-26_13-16-42_screenshot.png]]
+
+In this chapter, we will look at how Python allows users to tell it to do things at specific moments.
+
+** Theory
+*** Mock objects
+
+#+caption: Temporary replacement
+#+begin_src python
+import time
+
+def elapsed(since):
+    return time.time() - since
+
+def mock_time():
+    return 200
+
+def test_elapsed():
+    time.time = mock_time
+    assert elapsed(50) == 150
+#+end_src
+
+Temporary replacements like this are called *mock objects* because we usually use objects even if the thing we’re replacing is a function.
+
+- mock object ::
+  A simplified replacement for part of a program whose behavior is easy to control and predict.
+
+  Mock objects are used in unit tests to simulate databases, web services, and other complex systems.
+
+- We can do this because Python lets us create objects that can be “called” just like functions.
+
+  If an object obj has a ~__call__~ method, then ~obj(…)~ is automatically turned into =obj.__call__(…)= just as ~a == b~ is automatically turned into =a.__eq__(b)=
+
+  #+caption: example of __call__
+  #+begin_src python :eval yes
+  class Adder:
+      def __init__(self, value):
+          self.value = value
+
+      def __call__(self, arg):
+          return arg + self.value
+
+  add_3 = Adder(3)
+  result = add_3(8)
+  print(f"add_3(8): {result}")
+  #+end_src
+
+  #+RESULTS:
+  : add_3(8): 11
+
+#+caption: Defining a resuable mock object class
+#+name: class Fake
+#+begin_src python
+class Fake:
+    def __init__(self, func=None, value=None):
+        """
+        the fake value is generated using 'func' or 'value'
+        """
+        self.calls = []
+        self.func = func
+        self.value = value
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append([args, kwargs])
+        if self.func is not None:
+            return self.func(*args, **kwargs)
+        return self.value
+#+end_src
+
+The above is a reusable mock object class that:
+
+1. defines a ~__call__~ method so that instances can be called like functions;
+
+2. declares the parameters of that method to be ~*args~ and ~**kwargs~ so that it can be called with any number of regular or keyword arguments;
+
+3. stores those arguments so we can see how the replaced function was called; and
+
+4. returns either a fixed value or a value produced by a user-defined function.
+
+For convenience, let’s also define a function that replaces some function we’ve already defined with an instance of our =Fake= class:
+
+#+begin_src python
+def fakeit(name, func=None, value=None):
+    assert name in globals()
+    fake = Fake(func, value)
+    globals()[name] = fake
+    return fake
+
+def adder(a, b):
+    return a + b
+
+def test_with_real_function():
+    assert adder(2, 3) == 5
+
+def test_with_fixed_return_value():
+    fakeit("adder", value=99)
+    assert adder(2, 3) == 99
+
+#+end_src
+
+The problem with ~fakeit~ is that using mock objects should be a temporary thing.
+But, when we use ~fakeit~ we reassign 'name' to the fake function, but don't reassign it to the original function !
+
+*** Protocols
+
+A protocol is a rule that specifies how programs can tell Python to do specific things at specific moments.
+- ~__init__~
+- ~__call__~
+- context manager ::
+    An object that automatically executes some operations at the start of a code block and some other operations at the end of the block.
+
+What we want for managing mock objects is a *context manager* that replaces the real function with our mock at the start of a block of code and then puts the original back at the end.
+
+The protocol for this relies on two methods called ~__enter__~ and ~__exit__~. If the class is called =C=, then when Python executes a with block like this:
+
+#+begin_src python
+with C(..args..) as name:
+    ...do things...
+#+end_src
+
+does the following:
+
+1. Call C’s constructor to create an object that it associates with the code block.
+2. Call that object’s ~__enter__~ method and assign the result to the variable =name=.
+
+   #+begin_src python
+   def __enter__(self):
+       # __enter__ doesn't take any arguments apart from self.
+       # Anything it needs must be provided via the object’s constructor.
+       # ...
+       # ..
+       # The value returned by __enter__ (can be 'self') is assigned to the
+       # variable 'name'
+       return someValue
+   #+end_src
+
+3. Run the code inside the =with= block.
+
+4. Call ~name.__exit__()~ when the block finishes.
+
+   #+begin_src python
+   def __exit__(self, exc_type, exc_value, exc_traceback):
+       # __exit__ will always be called with three values that tell it whether an
+       # exception occurred, and if so, what the exception was.
+       #
+       # do stuff
+   #+end_src
+
+#+caption: Mock object context manager
+#+name: class ContextFake
+#+begin_src python :noweb yes
+<<class Fake>>
+
+class ContextFake(Fake):
+    def __init__(self, name, func=None, value=None):
+        super().__init__(func, value)
+        self.name = name
+        self.original = None
+
+    def __enter__(self):
+        assert self.name in globals()
+        self.original = globals()[self.name]
+        globals()[self.name] = self  # OH, we use the __call__ method of 'Fake'
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        globals()[self.name] = self.original
+#+end_src
+
+#+caption: example usage
+#+begin_src python :noweb yes :eval yes
+<<class ContextFake>>
+
+def subber(a, b):
+    return a - b
+
+def check_no_lasting_effects():
+    assert subber(2,3) == -1
+    with ContextFake('subber', value=1234) as fake:
+        assert subber(2,3) == 1234
+        assert len(fake.calls) == 1
+        print(f'Inside: subber(2,3) = {subber(2,3)}')
+    print(f'Outside: subber(2,3) = {subber(2,3)}')
+    assert subber(2,3) == -1
+
+check_no_lasting_effects()
+#+end_src
+
+#+RESULTS:
+: Inside: subber(2,3) = 1234
+: Outside: subber(2,3) = -1
+
+Context managers can’t prevent people from making mistakes, but they make it easier for people to do the right thing.
+
+They are also an example of how programming languages often evolve: eventually, if enough people are doing something the same way in enough places, support for that way of doing things is added to the language.
+
+*** Decorators
+- decorator ::
+  A function A that can be applied to another function B when function B is being defined to change its behavior in some way.
+
+A *decorator* allows us to wrap one function with another.
+
+#+begin_src python :eval yes
+def wrap(func):
+    def new_func(*args):
+        print('before call')
+        func(*args)
+        print('after call')
+    return new_func
+
+@wrap
+def original(message):
+    print(f'original: {message}')
+
+original('example')
+#+end_src
+
+#+RESULTS:
+: before call
+: original: example
+: after call
+
+In the above code ~@wrap~ makes it so that
+#+begin_src python
+original = wrap(original)
+# therefore, 'original' now refers to 'new_func'
+#+end_src
+
+If we want to pass arguments at the time we apply the decorator, though, it seems like we’re stuck: a Python decorator _must take_ exactly one argument, which must be the function we want to decorate.
+
+The solution is to define a function inside a function /inside yet another function/ to create a closure that captures the arguments:
+
+#+begin_src python :eval yes
+def wrap(*args):                  # function returning a decorator
+    def _decorate(func):          # the decorator Python will apply
+        def _new_func(*_args):        # the wrapped function
+            print(f"++ {[*args]}")  # 'label' is visible because
+            func(*_args)           # …it's captured in the closure
+            print(f"-- {[*args]}")  # …of '_decorate'
+        return _new_func
+    return _decorate
+
+@wrap("arg1", "arg2")                 # call 'wrap' to get a decorator
+def original(message):            # decorator applied here
+    print(f"original: {message}")
+
+original("example")
+#+end_src
+
+#+RESULTS:
+: ++ ['arg1', 'arg2']
+: original: example
+: -- ['arg1', 'arg2']
+
+*** Iterators
+
+As a last example of how protocols work, consider the =for= loop. The statement ~for thing in collection~ assigns items from ~collection~ to the variable ~thing~ one at a time.
+
+- iterator ::
+  A function or object that produces each value from a collection in turn for processing.
+
+- Iterator pattern :: A design pattern that uses iterators to hide the differences between different kinds of data structures so that everything can be processed using loops.
+
+Python implements this using a two-part /iterator/ protocol, which is a version of the *Iterator design* pattern:
+
+1. If an object has an ~__iter__~ method, that method is called to create an iterator object.
+
+2. That iterator object must have a ~__next__~ method, which must return a value each time it is called.
+   When there are no more values to return, it must raise a =StopIteration= exception.
+
+
+For example, suppose we have a class that stores a list of strings and we want to return the characters from the strings in order.
+
+#+name: class NaiveIterator
+#+begin_src python
+class NaiveIterator:
+    def __init__(self, text):
+        self._text = text[:]
+
+    def __iter__(self):
+        self._row, self._col = 0, -1
+        return self
+
+    def __next__(self):
+        # We want to handle cases where,
+        # text = ['a', '', '', b]
+        # text = ['', '', 'a']
+        # text = ['', '', '']
+        #
+        # that is why we start at (0, -1)
+        self._advance() # 0,-1 -> 0,0
+
+        return self._text[self._row][self._col]
+
+    def _advance(self):
+        # check if row is valid
+        if self._row < len(self._text):
+            n = len(self._text[self._row])
+            self._col += 1
+            if self._col >= n:
+                self._row += 1
+                self._col = 0
+        else:
+            raise StopIteration
+
+        # check if (row, col) is valid
+        if not self._is_valid():
+            # try again
+            self._advance()
+
+    def _is_valid(self) -> bool:
+        """
+        Returns boolean indicating whether our row and col
+        are at a valid position in text.
+        """
+        if self._row < len(self._text):
+            item = self._text[self._row]
+            if self._col < len(item):
+                return True
+        return False
+#+end_src
+
+#+begin_src python :noweb yes :eval yes
+<<class NaiveIterator>>
+from typing import Iterable
+
+def gather(buffer: Iterable):
+    result = ""
+    for char in buffer:
+        result += char
+    return result
+
+def test_naive_buffer():
+    buffer = NaiveIterator(["ab", "c"])
+    result = gather(buffer)
+    print(result == 'abc', f';result: {result}')
+
+def test_naive_buffer_empty_string():
+    buffer = NaiveIterator(['a', '', '', 'b'])
+    result = gather(buffer)
+    print(result == 'ab', f';result: {result}')
+
+    buffer = NaiveIterator(['', '', 'a'])
+    result = gather(buffer)
+    print(result == 'a', f';result: {result}')
+
+    buffer = NaiveIterator(['', '', ''])
+    result = gather(buffer)
+    print(result == '', f';result: {result}')
+
+def test_naive_buffer_nested_loop():
+    buffer = NaiveIterator(["a", "b"])
+    result = ""
+    for outer in buffer:
+        for inner in buffer:
+            result += inner
+    print(result == 'abab', f';result: {result}')
+
+test_naive_buffer()
+test_naive_buffer_empty_string()
+test_naive_buffer_nested_loop()
+#+end_src
+
+#+RESULTS:
+: True ;result: abc
+: True ;result: ab
+: True ;result: a
+: True ;result:
+: False ;result: ab
+
+In our first attempt, each object is its own iterator, i.e., each object keeps track of what value to return next when looping.
+
+- ~NaiveIterator~ fails when we use a nested loop.
+
+  The problem is that we only have one pair of variables (the ~_row~ and ~_col~ attributes of the buffer) to store the current location, but two loops trying to use them.
+
+What we need to do instead is create a separate object for each loop to use,
+i.e each time the ~__iter__~ should return a new object:
+
+#+name: class BetterIterator
+#+begin_src python
+class BetterIterator:
+    def __init__(self, text):
+        self._text = text[:]
+
+    def __iter__(self):
+        return BetterCursor(self._text)
+
+class BetterCursor:
+    def __init__(self, text):
+        self._text = text
+        self._row = 0
+        self._col = -1
+
+    def __next__(self):
+        # We want to handle cases where,
+        # text = ['a', '', '', b]
+        # text = ['', '', 'a']
+        # text = ['', '', '']
+        #
+        # that is why we start at (0, -1)
+        self._advance() # 0,-1 -> 0,0
+
+        return self._text[self._row][self._col]
+
+    def _advance(self):
+        # check if row is valid
+        if self._row < len(self._text):
+            n = len(self._text[self._row])
+            self._col += 1
+            if self._col >= n:
+                self._row += 1
+                self._col = 0
+        else:
+            raise StopIteration
+
+        # check if (row, col) is valid
+        if not self._is_valid():
+            # try again
+            self._advance()
+
+    def _is_valid(self) -> bool:
+        """
+        Returns boolean indicating whether our row and col
+        are at a valid position in text.
+        """
+        if self._row < len(self._text):
+            item = self._text[self._row]
+            if self._col < len(item):
+                return True
+        return False
+#+end_src
+
+
+- NOTE :: The ~BetterIterator~ doesn't have a ~__next__~ method, while ~BetterCursor~ doesn't have an ~__iter__~ method.
+
+#+begin_src python :noweb yes :eval yes
+<<class BetterIterator>>
+from typing import Iterable
+
+def gather(buffer: Iterable):
+    result = ""
+    for char in buffer:
+        result += char
+    return result
+
+def test_naive_buffer():
+    buffer = BetterIterator(["ab", "c"])
+    result = gather(buffer)
+    print(result == 'abc', f';result: {result}')
+
+def test_naive_buffer_empty_string():
+    buffer = BetterIterator(['a', '', '', 'b'])
+    result = gather(buffer)
+    print(result == 'ab', f';result: {result}')
+
+    buffer = BetterIterator(['', '', 'a'])
+    result = gather(buffer)
+    print(result == 'a', f';result: {result}')
+
+    buffer = BetterIterator(['', '', ''])
+    result = gather(buffer)
+    print(result == '', f';result: {result}')
+
+def test_naive_buffer_nested_loop():
+    buffer = BetterIterator(["a", "b"])
+    result = ""
+    for outer in buffer:
+        for inner in buffer:
+            result += inner
+    print(result == 'abab', f';result: {result}')
+
+test_naive_buffer()
+test_naive_buffer_empty_string()
+test_naive_buffer_nested_loop()
+#+end_src
+
+#+RESULTS:
+: True ;result: abc
+: True ;result: ab
+: True ;result: a
+: True ;result:
+: True ;result: abab
+
+* TODO Chapter 10: Protocols
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/archive/
+:header-args:python: :session ch10 :results output :async yes :eval no
+:header-args:sh: :session ch10-sh :results output :async yes
 :END:

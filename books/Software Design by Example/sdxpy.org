@@ -3267,9 +3267,482 @@ test_naive_buffer_nested_loop()
 : True ;result:
 : True ;result: abab
 
-* TODO Chapter 10: Protocols
+* Chapter 10: A File Archiver
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/archive/
 :header-args:python: :session ch10 :results output :async yes :eval no
 :header-args:sh: :session ch10-sh :results output :async yes
+:END:
+
+** Summary
+:PROPERTIES:
+:ID:       b3ed8b6c-796e-4486-ad01-c920cf49c7f3
+:END:
+
+- Version control tools use hashing to uniquely identify each saved file.
+- Each snapshot of a set of files is recorded in a *manifest*.
+
+- Using a /mock filesystem/ for testing is safer and faster than using the real thing.
+
+- Operations involving multiple files may suffer from /race conditions/.
+
+- Use a base class to specify what a component must be able to do and derive child classes to implement those operations.
+
+#+caption: Concept map for hashing-based file backup
+[[file:images/Chapter_10:_Protocols/2025-08-29_14-45-25_screenshot.png]]
+
+A *version control system* like Git keeps track of changes to files so that we can see what we’ve changed, recover old versions, and merge our changes with those made by other people.
+
+- The CORE of a modern version control tool is a way to archive files that:
+
+  1. records which versions of which files existed at the same time, so that we can go back to a consistent previous state, and
+
+  2. stores any particular version of a file only once, so that we don’t waste disk space.
+
+This chapter builds a tool that does both tasks.
+
+- It won’t create and merge branches; if you would like to see how that works, please see [[http://gitlet.maryrosecook.com/][Mary Rose Cook’s Gitlet]] or Thibault Polge’s [[https://wyag.thb.lt/][Write yourself a Git]] ( TODO: looks awesome :)
+
+** Theory
+*** Setup
+
+#+begin_src sh
+mkdir -p ./src/ch10/sample_dir
+mkdir -p ./src/ch10/sample_dir/sub_dir
+
+echo aaa > ./src/ch10/sample_dir/a.txt
+echo bbb > ./src/ch10/sample_dir/b.txt
+echo ccc > ./src/ch10/sample_dir/sub_dir/c.txt
+
+tree --charset ascii ./src/ch10/sample_dir/
+#+end_src
+
+#+RESULTS:
+: ./src/ch10/sample_dir/
+: |-- a.txt
+: |-- b.txt
+: `-- sub_dir
+:     `-- c.txt
+:
+: 2 directories, 3 files
+
+*** Saving Files
+:PROPERTIES:
+:ID:       34f27697-cb19-4ff6-949d-3aa34e92c9b2
+:END:
+
+#+caption: Organization of backup file storage
+[[file:images/Chapter_10:_Protocols/2025-08-29_15-11-22_screenshot.png]]
+
+
+- Many files only change occasionally after they’re created, or not at all.
+
+  It would be wasteful for a version control system to make copies each time the user saved a snapshot of a project, so instead we will copy each unique file to something like abcd1234.bck, where abcd1234 is the hash of the file’s contents.
+
+- Each snapshot (a csv file named using the current timestamp) consist of a list of (filename, hash-value)
+
+  In that snapshot, that filename is associated with some 'hash-value' (made from that file's contents) and we will find the file associated with that hash at 'hash-value.bck'
+
+
+The first step is to find all the files in or below a given directory that we need to save.
+Python's [[https://docs.python.org/3/library/glob.html][glob]] module can do this for us.
+
+#+name: hash_all
+#+begin_src python :tangle ./src/ch10/hash_all.py
+from glob import glob
+from hashlib import sha256
+from pathlib import Path
+
+HASH_LEN=16
+
+def hash_all(root):
+    result = []
+    for name in glob("**/*.*", root_dir=root, recursive=True):
+        full_name = Path(root, name)
+        with open(full_name, "rb") as reader:
+            data = reader.read()
+            # we are truning to [:16] for readable
+            hash_code = sha256(data).hexdigest()[:HASH_LEN]
+            result.append((name, hash_code))
+    return result
+
+#+end_src
+
+Notice that we’re truncating the hash code of each file to just 16 hexadecimal digits.
+
+This greatly increases the odds of collision, so real version control systems don’t do this, but it makes our program’s output easier to show on screen.
+
+For example:
+
+#+begin_src python :noweb yes :eval yes
+from pprint import pprint
+
+<<hash_all>>
+
+pprint(hash_all('./src/ch10/sample_dir/'))
+#+end_src
+
+#+RESULTS:
+: [('a.txt', '17e682f060b5f8e4'),
+:  ('b.txt', '3cf9a1a81f6bdeaf'),
+:  ('sub_dir/c.txt', '5695d82a086b6779')]
+
+*** Testing
+:PROPERTIES:
+:ID:       b5b19ec1-7687-46be-812b-a896df172f27
+:END:
+
+Before we go any further we need to figure out how we’re going to test our code.
+
++ The obvious approach :: is to create directories and sub-directories containing some files we can use as fixtures.
+
+  - However :: we are going to change or delete those files as we back things up and restore them.
+
+    To make sure early tests don’t contaminate later ones, we would have to recreate those files and directories after each test.
+
+
++ Better approach :: is to use a mock object instead of the real filesystem.
+
+  The [[https://pytest-pyfakefs.readthedocs.io/][pyfakefs]] module replaces key functions like open with functions that behave the same way but act on “files” stored /in memory/.
+
+  Using it prevents our tests from accidentally disturbing the filesystem; it also makes tests much faster since in-memory operations are thousands of times faster than ones that touch the disk.
+
+#+caption: Using a mock filesystem to simplify testing
+[[file:images/Chapter_10:_Protocols/2025-08-30_11-41-42_screenshot.png]]
+
+If we import =pyfakefs=, we automatically get a fixture called ~fs~ that we can use to create files. We tell =pytest= we want to use this fixture by passing it as an argument to our testing function:
+
+#+begin_src python :tangle ./src/ch10/test_mock_fs.py
+import pyfakefs
+from pathlib import Path
+
+# Here 'fs' is a pytest fixture
+def test_simple_example(fs):
+    sentence = "this file contains one sentence."
+    with open('alpha.txt', 'w') as writer:
+        writer.write(sentence)
+    assert Path('alpha.txt').exists()
+    with open('alpha.txt', 'r') as reader:
+        assert reader.read() == sentence
+#+end_src
+
+#+begin_src sh
+uvx --with pyfakefs pytest ./src/ch10/test_mock_fs.py
+#+end_src
+
+#+RESULTS:
+: =============================== test session starts ================================
+: platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: plugins: pyfakefs-5.9.3
+: collected 1 item
+:
+: src/ch10/test_mock_fs.py .                                                   [100%]
+:
+: ================================ 1 passed in 0.03s =================================
+
+We can use ~fs~ to create more complicated fixtures of our own with multiple directories and files:
+
+#+begin_src python :tangle ./src/ch10/test_mock_tree.py
+from pathlib import Path
+import pytest
+
+@pytest.fixture
+def our_fs(fs):
+    fs.create_file('a.txt', contents='aaa')
+    fs.create_file("b.txt", contents="bbb")
+    fs.create_file("sub_dir/c.txt", contents="ccc")
+
+def test_nested_example(our_fs):
+    assert Path("a.txt").exists()
+    assert Path("b.txt").exists()
+    assert Path("sub_dir/c.txt").exists()
+
+def test_deletion_example(our_fs):
+    assert Path("a.txt").exists()
+    Path("a.txt").unlink()
+    assert not Path("a.txt").exists()
+#+end_src
+
+and then test that [[hash_all]] finds all the files:
+
+#+begin_src python :tangle ./src/ch10/test_hash_all.py
+import pytest
+
+from hash_all import hash_all, HASH_LEN
+
+@pytest.fixture
+def our_fs(fs):
+    fs.create_file("a.txt", contents="aaa")
+    fs.create_file("b.txt", contents="bbb")
+    fs.create_file("sub_dir/c.txt", contents="ccc")
+
+def test_hashing(our_fs):
+    result = hash_all(".")
+    expected = {"a.txt", "b.txt", "sub_dir/c.txt"}
+    assert {r[0] for r in result} == expected
+    assert all(len(r[1]) == HASH_LEN for r in result)
+#+end_src
+
+and that hashes change when files change:
+
+#+begin_src python :tangle ./src/ch10/test_hash_all.py
+
+def test_change(our_fs):
+    original = hash_all(".")
+    original = [entry for entry in original if entry[0] == "a.txt"][0]
+    with open("a.txt", "w") as writer:
+        writer.write("this is new content for a.txt")
+    changed = hash_all(".")
+    changed = [entry for entry in changed if entry[0] == "a.txt"][0]
+    assert original != changed
+#+end_src
+
+
+#+begin_src sh
+uvx --with pyfakefs pytest ./src/ch10/
+#+end_src
+
+#+RESULTS:
+#+begin_example
+=============================== test session starts ================================
+platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+plugins: pyfakefs-5.9.3
+collected 5 items
+
+src/ch10/test_hash_all.py ..                                                 [ 40%]
+src/ch10/test_mock_fs.py .                                                   [ 60%]
+src/ch10/test_mock_tree.py ..                                                [100%]
+
+================================ 5 passed in 0.05s =================================
+#+end_example
+
+*** Tracking Backups
+
+The second part of our backup tool keeps track of which files have and haven’t been backed up already.
+
+It stores backups in a directory that contains files like abcd1234.bck (the hash followed by .bck) and creates a manifest that describes the content of each snapshot.
+
+A real system would support remote storage as well so that losing one hard drive wouldn’t mean losing all our work, so we need to design our system with multiple back ends in mind.
+
+For now, we will store manifests in CSV files named ssssssssss.csv, where ssssssssss is the UTC timestamp of the backup’s creation.
+
+#+caption: Time of Check / Time of Use
+#+begin_quote
+Our naming convention for manifests will fail if we try to create two or more backups in the same second.
+
+This *might seem unlikely*, BUT many faults and security holes are the result of programmers ASSUMING things weren’t going to happen.
+
+We could try to avoid this problem by using a two-part naming scheme ssssssss-a.csv, ssssssss-b.csv, and so on, but this leads to a race condition called time of check/time of use.
+
+- time of check - time of use ::
+  A race condition in which a process checks the state of something and then operates on it, but some other process might alter that state between the check and the operation.
+
+If two users run the backup tool at the same time, they will both see that there isn’t a file (yet) with the current timestamp, so they will both try to create the first one.
+
+Ensuring that multi-file updates are /atomic operations/ (i.e., that they always appear to be a single indivisible step) is a hard problem; file locking is a common approach, but complete solutions are out of the scope of this book.
+
+- file locking ::
+  The act of restricting updates to a file, or its deletion, so that operations on it appear atomic.
+#+end_quote
+
+This function creates a backup -- or rather, it will once we fill in all the functions it depends on:
+
+#+begin_src python :tangle ./src/ch10/backup.py
+import csv
+import shutil
+import time
+from pathlib import Path
+from hash_all import hash_all
+
+def backup(source_dir, backup_dir):
+    manifest = hash_all(source_dir)
+    timestamp = current_time()
+    write_manifest(backup_dir, timestamp, manifest)
+    copy_files(source_dir, backup_dir, manifest)
+    return manifest
+
+"""
+When writing the manifest, we check that the backup directory exists, create
+it if it does not, and then save the manifest as CSV
+"""
+
+def write_manifest(backup_dir, timestamp, manifest):
+    backup_dir = Path(backup_dir)
+    if not backup_dir.exists():
+        backup_dir.mkdir()
+
+    manifest_file = Path(backup_dir, f"{timestamp}.csv")
+    with open(manifest_file, "w") as raw:
+        writer = csv.writer(raw)
+        writer.writerow(["filename", "hash"])
+        writer.writerows(manifest)
+
+"""
+We then copy those files that haven’t already been saved:
+"""
+
+def copy_files(source_dir, backup_dir, manifest):
+    for (filename, hash_code) in manifest:
+        source_path = Path(source_dir, filename)
+        backup_path = Path(backup_dir, f"{hash_code}.bck")
+        if not backup_path.exists():
+            shutil.copy(source_path, backup_path)
+
+#+end_src
+
+- We have introduced several more race conditions here:
+
+  for example, if two people are creating backups at the same time, they could both discover that the backup directory doesn’t exist and then both try to create it.
+
+  Whoever does so first will succeed, but whoever comes second will fail.
+
+- Our backup function relies on a helper function called ~current_time~ that does nothing but call ~time.time~ from Python’s standard library:
+
+  *Q.* Why ?
+  *A.* We could call ~time.time~ directly, but wrapping it up like this makes it easier to replace with a mock for testing.
+
+#+begin_src python :tangle ./src/ch10/backup.py
+
+def current_time():
+    return f"{time.time()}".split(".")[0]
+#+end_src
+
+Let’s do one test with real files:
+
+#+begin_src python :tangle ./src/ch10/backup.py
+
+import sys
+from pprint import pprint
+
+if __name__ == '__main__':
+    args = sys.argv[1:]
+    source_dir = args[0]
+    backup_dir = args[1]
+
+    manifest = backup(source_dir, backup_dir)
+    pprint(manifest)
+#+end_src
+
+#+begin_src sh
+BACKUPS=/tmp/backups
+[ -d "$BACKUPS" ] && trash "$BACKUPS"
+uv run ./src/ch10/backup.py ./src/ch10/sample_dir/ "$BACKUPS"
+echo
+tree --charset ascii "$BACKUPS"
+#+end_src
+
+#+RESULTS:
+#+begin_example
+[('a.txt', '17e682f060b5f8e4'),
+ ('b.txt', '3cf9a1a81f6bdeaf'),
+ ('sub_dir/c.txt', '5695d82a086b6779')]
+
+/tmp/backups
+|-- 1756539204.csv
+|-- 17e682f060b5f8e4.bck
+|-- 3cf9a1a81f6bdeaf.bck
+`-- 5695d82a086b6779.bck
+
+1 directory, 4 files
+#+end_example
+
+The rest of our tests use a fake filesystem and a mock replacement for the ~current_time~ function (so that we know what the manifest file will be called). The setup is:
+
+#+begin_src python :tangle ./src/ch10/test_backup.py
+import pyfakefs
+import pytest
+from unittest.mock import patch
+from backup import backup
+from pathlib import Path
+
+FILES = {"a.txt": "aaa", "b.txt": "bbb", "sub_dir/c.txt": "ccc"}
+
+@pytest.fixture
+def our_fs(fs):
+    for name, contents in FILES.items():
+        fs.create_file(name, contents=contents)
+
+"""
+Example of a single test (num-num power)
+"""
+
+def test_nested_example(our_fs):
+    timestamp = 1234
+    with patch("backup.current_time", return_value=timestamp):
+        manifest = backup(".", "/backup")
+    assert Path("/backup", f"{timestamp}.csv").exists()
+    for filename, hash_code in manifest:
+        assert Path("/backup", f"{hash_code}.bck").exists()
+
+#+end_src
+
+#+begin_src sh
+uvx --with pyfakefs pytest ./src/ch10/
+#+end_src
+
+#+RESULTS:
+#+begin_example
+=============================== test session starts ================================
+platform linux -- Python 3.12.8, pytest-8.4.1, pluggy-1.6.0
+rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+plugins: pyfakefs-5.9.3
+collected 6 items
+
+src/ch10/test_backup.py .                                                    [ 16%]
+src/ch10/test_hash_all.py ..                                                 [ 50%]
+src/ch10/test_mock_fs.py .                                                   [ 66%]
+src/ch10/test_mock_tree.py ..                                                [100%]
+
+================================ 6 passed in 0.04s =================================
+#+end_example
+
+*** Refactoring
+
+Now that we have a better idea of what we’re doing, we can refactor to create a base class that prescribes the general steps in creating a backup:
+
+#+begin_src python
+class Archive:
+    def __init__(self, source_dir):
+        self._source_dir = source_dir
+
+    def backup(self):
+        manifest = hash_all(self._source_dir)
+        self._write_manifest(manifest)
+        self._copy_files(manifest)
+        return manifest
+#+end_src
+
+We can then derive a child class to archive things locally and fill in its methods by re-using code from the functions we have just written. Once we’ve done this, we can create the specific archiver we want with a single line:
+
+#+begin_src python
+archiver = ArchiveLocal(source_dir, backup_dir)
+#+end_src
+
+Doing this makes life easier when we want to write archivers that /behave the same way/ BUT work differently.
+
+- For example, we could create an archiver that /compresses/ the files it archives by deriving a new class from ~ArchiveLocal~ and writing a new ~_copy_files~ method.
+
+  More importantly, other code can use an archiver /without knowing what it’s doing/.
+
+- For example, the function ~analyze_and_save~ reads some data, analyzes it, saves the results, and then creates an archive of those results.
+
+  It doesn’t know whether the archive is compressing files or whether they’re being saved locally or remotely.
+
+#+begin_src python
+def analyze_and_save(options, archiver):
+    data = read_data(options)
+    results = analyze_data(data)
+    save_everything(results)
+    archiver.backup()
+#+end_src
+
+- Strength of OOP :: This example highlights one of the strengths of object-oriented programming: it allows old code to use new code without any changes.
+
+* TODO Chapter 11: An HTML Validator
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/check/
+:header-args:python: :session ch11 :results output :async yes :eval no
+:header-args:sh: :session ch11-sh :results output :async yes
 :END:

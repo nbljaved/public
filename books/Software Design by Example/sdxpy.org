@@ -3746,3 +3746,651 @@ def analyze_and_save(options, archiver):
 :header-args:python: :session ch11 :results output :async yes :eval no
 :header-args:sh: :session ch11-sh :results output :async yes
 :END:
+* Chapter 12: A Template Expander
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/template/
+:header-args:python: :session ch12 :results output :async yes :eval no
+:header-args:sh: :session ch12-sh :results output :async yes
+:GPTEL_TOPIC: chapter-12:-a-template-expander
+:END:
+
+** Summary
+:PROPERTIES:
+:ID:       96bbe796-ffbf-40f9-903d-7bcd0cd8b74b
+:END:
+
++ Static site generators create HTML pages from templates, directives, and data.
+
++ A static site generator has _THE SAME CORE FEATURES_ as a programming language.
++ Special-purpose mini-languages quickly become as complex as other languages.
+
++ Static methods are :: a convenient way to group functions together.
+
+#+caption: HTML templating concept map
+[[file:images/Chapter_12:_A_Template_Expander/2025-09-01_13-36-52_screenshot.png]]
+
+- Every program needs documentation, and the best place to put documentation is on the web.
+  Writing and updating HTML pages by hand is time-consuming and error-prone, particularly when many parts are the same.
+
+  Most modern websites therefore use some kind of static site generator (SSG) to create pages from templates.
+
+Most of these systems use one of three designs (Figure 12.1):
+
+#+caption: Three different ways to implement page templating
+[[file:images/Chapter_12:_A_Template_Expander/2025-09-01_13-39-41_screenshot.png]]
+
+1. Mix commands in an existing language such as JavaScript with the HTML or Markdown using some kind of marker to indicate which parts are commands and which parts are to be taken as-is. This approach is taken by EJS.
+
+2. Create a mini-language with its own commands like Jekyll.
+
+   Mini-languages are appealing because they are smaller and safer than general-purpose languages, _BUT_ eventually they acquire most of the features of a general-purpose language.
+
+   Again, some kind of marker must be used to show which parts of the page are code and which are ordinary text.
+
+3. Put directives in specially-named attributes in the HTML. This approach is the least popular, but it eliminates the need for a special parser.
+
+
+- This chapter builds a simple page templating system using the third strategy.
+
+  We will process each page independently by parsing the HTML and walking the DOM to find nodes with special attributes.
+
+  Our program will execute the instructions in those nodes to implement loops and if/else statements; other nodes will be copied as-is to create text.
+
+** Theory
+*** Syntax
+:PROPERTIES:
+:ID:       d5656182-1ad1-47fc-be08-363d81c82c8c
+:END:
+
+Let’s start by deciding what “done” looks like. Suppose we want to turn an array of strings into an HTML list. Our template will look like this:
+
+#+begin_src html
+<html>
+  <body>
+    <ul z-loop="item:names">
+      <li><span z-var="item"/></li>
+    </ul>
+  </body>
+</html>
+#+end_src
+
+The attribute =z-loop= tells the tool to repeat the contents of that node;
+the loop variable and the collection being looped over are separated by a colon.
+The =span= with the attribute =z-var= tells the tool to fill in the node with the value of the variable.
+
+When our tool processes this page, the output will be standard HTML without any traces of how it was created:
+
+#+begin_src html
+<html>
+<body>
+<ul>
+<li><span>Johnson</span></li>
+
+<li><span>Vaughan</span></li>
+
+<li><span>Jackson</span></li>
+</ul>
+</body>
+</html>
+#+end_src
+
+#+caption: Human Readable vs Machine Readable
+#+begin_quote
+Putting the loop variable and target in a single attribute makes loops easy to type but hides information from standard HTML tools, which can’t know that this attribute contains multiple values separated by a colon. We should use two attributes like this:
+
+~<ul z-loop="names" z-loop-var="item">~
+
+but we decided to save ourselves a little typing.
+
+We should also call our attributes data-something instead of z-something to conform with the HTML5 specification, but again, decided to save ourselves a bit of typing.
+#+end_quote
+
+- The next step is to define the Application Programming Interface (API) for filling in templates.
+
+  Our tool needs:
+  1. the template itself,
+  2. somewhere to write its output, and
+  3. the set of variables to use in the expansion.
+
+  Those variables might come from:
+  - a configuration file
+  - from a header in the file itself, or
+  - from somewhere else entirely,
+
+  so we will assume the calling program has gotten them somehow and have it pass them into the expansion function as a dictionary.
+
+#+begin_src python
+data = {"names": ["Johnson", "Vaughan", "Jackson"]}
+
+dom = read_html("template.html")
+expander = Expander(dom, data)
+expander.walk()
+print(expander.result)
+#+end_src
+
+#+caption: Combining text and data in templating
+[[file:images/Chapter_12:_A_Template_Expander/2025-09-01_13-46-35_screenshot.png]]
+
+*** Managing Variables (How ?)
+
+As soon as we have variables, _we need a way to track their values_.
+
+We also need to maintain multiple sets of variables so that (for example) variables used inside a loop don’t conflict with ones used outside of it.
+
+As in [[*Chapter 7: An Interpreter][Chapter 7: An Interpreter]], we will use a /stack of environments/, each of which is a dictionary.
+
+#+begin_src python :tangle ./src/ch12/env.py
+class Env:
+    def __init__(self, initial):
+        self.stack = [initial.copy()]
+
+    def push(self, frame):
+        self.stack.append(frame)
+
+    def pop(self):
+        self.stack.pop()
+
+    def find(self, name):
+        for frame in reversed(self.stack):
+            if name in frame:
+                return frame[name]
+        return None
+#+end_src
+
+Our stack-handling class ~Env~ has methods to push and pop new stack frames and find a variable given its name. If the variable can’t be found, ~Env.find~ returns /None/ instead of raising an exception.
+
+*** Visiting Nodes
+
+As [[*Chapter 11: An HTML Validator][Chapter 11: An HTML Validator]] explained, HTML pages are usually stored in memory as trees and processed using the *Visitor pattern*.
+
+We therefore create a ~Visitor~ class whose constructor takes the root node of the DOM tree as an argument and saves it. Calling ~Visitor.walk~ without a value starts recursion from that saved root; when ~.walk~ is given a value (as it is during recursive calls), it uses that instead.
+
+#+begin_src python :tangle ./src/ch12/visitor.py
+
+
+class Visitor:
+    def __init__(self, root):
+        self.root = root
+        # Here a node will be a BeautifulSoup node
+
+    def walk(self, node=None):
+        if node is None:
+            node = self.root
+
+        opened = self.open(node)
+        # The 'open' method apart from its return value
+        # also has 'side-effects', i.e it opens the node
+        if opened:
+            for child in node.children:
+                self.walk(child)
+
+        self.close(node)
+
+    def open(self, node):
+        raise NotImplementedError("open")
+
+    def close(self, node):
+        raise NotImplementedError("close")
+#+end_src
+
+~Visitor~ defines two *abstract methods* ~open~ and ~close~ that are called when we first arrive at a node and when we are finished with it.
+
+These methods are called “abstract” because we can’t actually use them: any attempt to do so will raise an exception, which means child classes must override them. (In object-oriented terminology, this means that ~Visitor~ is an *abstract class*.)
+
+- NOTE :: This approach is different from that of the visitor in [[*Chapter 11: An HTML Validator][Chapter 11: An HTML Validator]], where we defined /do-nothing/ methods so that derived classes could override only the ones they needed.
+
+
+The ~Expander~ class is specialization of ~Visitor~ that uses an ~Env~ to keep track of variables.
+
+It imports handlers for each type of special node -- we will explore those in a moment -- and saves them along with a newly-created environment and a list of strings making up the output:
+
+#+begin_src python :tangle ./src/ch12/expander.py :noweb yes
+from env import Env
+from visitor import Visitor
+from bs4 import NavigableString
+
+<<import handlers>>
+
+class Expander(Visitor):
+    def __init__(self, root, variables):
+        super().__init__(root)
+        self.env = Env(variables) # variables is a dict of variable: value
+        self.handlers = HANDLERS # dict of special_attribute: special_object_object
+        self.result = []
+
+    <<Expander open close>>
+    <<Expander handler helper methods>>
+    <<Expander helper methods>>
+#+end_src
+
+- When recursion encounters a new node, it calls open to do one of three things:
+
+  1. If the node is plain text, copy it to the output.
+     - NOTE :: Here the output _ISN'T_ stdout (Flexible)
+
+  2. If there is a handler for the node, call the handler’s ~open~ or ~close~ method.
+
+  3. Otherwise, open a regular tag.
+
+#+name: Expander open close
+#+begin_src python
+def open(self, node):
+    if isinstance(node, NavigableString):
+        self.output(node.string)
+        return False
+    elif self.hasHandler(node):
+        # The handler is supposed to handle itself
+        # as-well-as open the node it is in.
+        return self.getHandler(node).open(self, node)
+    else:
+        self.showTag(node, closing=False)
+        # showTag handles a normal html node's opening/closing
+        return True
+
+def close(self, node):
+    if isinstance(node, NavigableString):
+        pass
+    elif self.hasHandler(node):
+        # The handler is supposed to handle itself
+        # as-well-as close the node it is in.
+        return self.getHandler(node).close(self, node)
+    else:
+        self.showTag(node, closing=True)
+        # showTag handles a normal html node's opening/closing
+        return True
+
+#+end_src
+
+Both methods find handlers by comparing the DOM node’s attributes to the keys in the dictionary of handlers built during construction:
+
+#+name: Expander handler helper methods
+#+begin_src python
+def hasHandler(self, node):
+    return any(
+        name in self.handlers
+        for name in node.attrs
+    )
+
+def getHandler(self, node):
+    possible = [
+        name for name in node.attrs
+        if name in self.handlers
+    ]
+    assert len(possible) == 1, "Should be exactly one handler"
+    return self.handlers[possible[0]]
+
+#+end_src
+
+Finally, we need a few helper methods to show tags and generate output:
+
+#+name: Expander helper methods
+#+begin_src python
+def showTag(self, node, closing):
+    if closing:
+        self.output(f"</{node.name}>")
+        return
+    self.output(f"<{node.name}")
+
+    # If opening:
+    for name in node.attrs:
+        # showTag is also used by the handler functions themselves
+        # therefore we must remove any attributes that start with 'z-'
+        if not name.startswith("z-"):
+            self.output(f' {name}="{node.attrs[name]}"')
+    self.output(">")
+
+def output(self, text):
+    # Doesn't output to stdout !!
+    self.result.append("UNDEF" if text is None else text)
+
+def getResult(self):
+    return "".join(self.result)
+
+#+end_src
+
+- NOTE ::  that ~Expander~ adds strings to an array and joins them all right at the end rather than concatenating strings repeatedly.
+
+  Doing this is more efficient; it also helps with debugging, since each string in the array corresponds to a single method call.
+
+*** Implementing Handlers
+
+- AIM :: Our last task is to implement the handlers for filling in variables’ values, looping, and so on.
+
+  We could define an /abstract class/ with ~open~ and ~close~ methods, derive one class for each of the template expander’s capabilities, and then construct one instance of each class for ~Expander~ to use, _but there’s a simpler way_.
+
+  - When Python executes the statement ~import something~ it
+    - executes the file /something.py/,
+    - saves the result in a specialized dictionary-like object, and
+    - assigns that object to the variable /something/.
+
+    That object can also be saved in data structures like lists and dictionaries or passed as an argument to a function just like numbers, functions, and classes -- _REMEMBER, PROGRAMS ARE JUST DATA_.
+
+Let’s expand a DOM node with a =z-num= attribute to insert a number into the output:
+#+begin_src python :tangle ./src/ch12/z_num.py
+def open(expander, node):
+    expander.showTag(node, closing=False)
+    expander.output(node.attrs["z-num"])
+
+def close(expander, node):
+    expander.showTag(node, closing=True)
+#+end_src
+
+- NOTE :: How we bring together ~Expander~ and our special handlers
+
+  - the handler :: takes in ~Expander~ as its first argument, and the node as the data it needs to act on.
+    Throughout the handler /handles/ which method of the ~Expander~ to call and how to call it.
+
+    In this manner the handler can be defined apart from the ~Expander~ class.
+
+  - the ~Expander~ :: passes itself into the hands of the handler as its first argument.
+
+When we enter a node like ~<span z-num="123"/>~ this handler asks the expander to show an opening tag followed by the value of the =z-num= attribute.
+
+When we exit the node, the handler asks the expander to close the tag.
+
+The handler DOESN’T KNOW whether things are printed immediately, added to an output list, or something else; it just knows that whoever called it implements the low-level operations it needs.
+
+Here’s how we connect this handler (and others we’re going to write in a second) to the expander:
+
+#+caption: we are using modules to prevent name collision just as we would use classes or functions.
+#+name: import handlers
+#+begin_src python
+import z_if
+import z_loop
+import z_num
+import z_var
+
+HANDLERS = {
+    "z-if": z_if,
+    "z-loop": z_loop,
+    "z-num": z_num,
+    "z-var": z_var
+}
+
+#+end_src
+
+#+begin_src python :tangle ./src/ch12/z_var.py
+def open(expander, node):
+    expander.showTag(node, closing=False)
+    expander.output(expander.env.find(node.attrs["z-var"]))
+
+def close(expander, node):
+    expander.showTag(node, closing=True)
+
+#+end_src
+
+#+caption: Generating Element IDs
+#+begin_quote
+It’s often handy to have a unique identifier for every element in a page, so some templating engines automatically generate id attributes for elements that don’t specify IDs explicitly.
+
+- If you do this, please _DO NOT_ generate random numbers, because then Git and other version control systems will think a regenerated page has changed when it actually hasn’t.
+
+- Generating sequential IDs is equally problematic:
+  if you add an item to a list at the top of the page, for example, that might change the IDs for all of the items in subsequent (unrelated) lists.
+
+*Q.* What to do then ?
+#+end_quote
+
+*** Some tests
+
+To check if they work:
+
+#+caption: Our variables to be used in different tests
+#+begin_src python :tangle ./src/ch12/vars.json
+{
+  "firstVar": "firstValue",
+  "secondVar": "secondValue",
+  "varName": "varValue",
+  "yes": true,
+  "no": false,
+  "names": ["Johnson", "Vaughan", "Jackson"]
+}
+#+end_src
+
+Our main function builds a program that loads variable definitions from a JSON file, reads an HTML template using the Beautiful Soup module, and does the expansion:
+
+#+begin_src python :tangle ./src/ch12/template.py
+import json
+import sys
+from bs4 import BeautifulSoup
+from expander import Expander
+
+def main():
+    with open(sys.argv[1], "r") as reader:
+        variables = json.load(reader)
+
+    with open(sys.argv[2], "r") as reader:
+        doc = BeautifulSoup(reader.read(), "html.parser")
+        template = doc.find("html")
+
+    expander = Expander(template, variables)
+    expander.walk()
+    print(expander.getResult())
+
+if __name__ == "__main__":
+    main()
+
+#+end_src
+
+
+#+caption: checks whether static text is copied over as-is
+#+begin_src html :tangle ./src/ch12/static_text.templ
+<html>
+  <body>
+    <h1>Static Text</h1>
+    <p>test</p>
+  </body>
+</html>
+#+end_src
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch12/template.py \
+   ./src/ch12/vars.json \
+   ./src/ch12/static_text.templ
+#+end_src
+
+#+RESULTS:
+: <html>
+: <body>
+: <h1>Static Text</h1>
+: <p>test</p>
+: </body>
+: </html>
+
+#+caption: does the expander handle constants?
+#+begin_src html :tangle ./src/ch12/single_constant.templ
+<html>
+  <body>
+    <p><span z-num="123"/></p>
+  </body>
+</html>
+#+end_src
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch12/template.py \
+   ./src/ch12/vars.json \
+   ./src/ch12/single_constant.templ
+#+end_src
+
+#+RESULTS:
+: <html>
+: <body>
+: <p><span>123</span></p>
+: </body>
+: </html>
+
+#+caption: What about a single variable?
+#+begin_src html :tangle ./src/ch12/single_variable.templ
+<html>
+  <body>
+    <p><span z-var="varName"/></p>
+  </body>
+</html>
+#+end_src
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch12/template.py \
+   ./src/ch12/vars.json \
+   ./src/ch12/single_variable.templ
+#+end_src
+
+#+RESULTS:
+: <html>
+: <body>
+: <p><span>varValue</span></p>
+: </body>
+: </html>
+
+#+caption: What about a page containing multiple variables?
+#+begin_src html :tangle ./src/ch12/multiple_variables.templ
+<html>
+  <body>
+    <p><span z-var="firstVar" /></p>
+    <p><span z-var="secondVar" /></p>
+  </body>
+</html>
+#+end_src
+
+There’s no reason it should fail if the single -- variable case works, but we should still check -- again, SOFTWARE ISN’T DONE UNTIL IT HAS BEEN TESTED.
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch12/template.py \
+   ./src/ch12/vars.json \
+   ./src/ch12/multiple_variables.templ
+#+end_src
+
+#+RESULTS:
+: <html>
+: <body>
+: <p><span>firstValue</span></p>
+: <p><span>secondValue</span></p>
+: </body>
+: </html>
+
+*** Control Flow
+
+Our tool supports conditional expressions and loops.
+
+Since we’re not implementing Boolean expressions like and and or, all we have to do for a condition is look up a variable and then expand the node if Python thinks the variable’s value is truthy:
+
+#+begin_src python :tangle ./src/ch12/z_if.py
+def open(expander, node):
+    check = expander.env.find(node.attrs["z-if"])
+    if check:
+        expander.showTag(node, closing=False)
+    return check
+
+def close(expander, node):
+    check = expander.env.find(node.attrs["z-if"])
+    if check:
+        expander.showTag(node, closing=True)
+
+#+end_src
+
+#+begin_src html :tangle ./src/ch12/conditional.templ
+<html>
+  <body>
+    <p z-if="yes">Should be shown.</p>
+    <p z-if="no">Should <em>not</em> be shown.</p>
+  </body>
+</html>
+#+end_src
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch12/template.py \
+   ./src/ch12/vars.json \
+   ./src/ch12/conditional.templ
+#+end_src
+
+#+RESULTS:
+: <html>
+: <body>
+: <p>Should be shown.</p>
+:
+: </body>
+: </html>
+
+#+caption: Spot the bug
+#+begin_quote
+This implementation of if contains a subtle bug.
+
+~open~ and ~close~ both check the value of the control variable.
+If something inside the body of the if changes that value, the result could be an opening tag without a matching closing tag or vice versa.
+
+We haven’t implemented an assignment operator, so right now there’s no way for that to happen, but it’s a plausible thing for us to add later, and /tracking down a bug in old code that is revealed by new code is always a headache/.
+#+end_quote
+
+*Q.* How to solve this bug ?
+*A.* (AI answer)
+
+To solve this, the boolean result of the =z-if= condition should be computed /once/ during the =open= call and then stored. This stored value should then be retrieved and used by the corresponding =close= call.
+
+A practical way to implement this, given the current =Visitor= pattern, is for the =Expander= class to maintain a stack of these =z-if= decisions.
+1.  In =Expander.open=, if a =z-if= handler is found, call =z_if.open= to get the condition's result (=check=). Store this =check= value on a dedicated stack within =Expander= (e.g., =self.if_decision_stack=).
+2.  In =Expander.close=, if a =z-if= handler is found, pop the original =check= value from =self.if_decision_stack= and pass it to =z_if.close=.
+3.  Modify =z_if.close= to accept and use this passed =check= value instead of re-evaluating the condition.
+
+
+Finally we have loops. For these, we need to get the array we’re looping over from the environment and do the following for each item it contains:
+
+1. Create a new stack frame holding the current value of the loop variable.
+2. Expand all of the node’s children with that stack frame in place.
+3. Pop the stack frame to get rid of the temporary variable.
+
+#+begin_src python :tangle ./src/ch12/z_loop.py
+def open(expander, node):
+    index_name, target_name = node.attrs["z-loop"].split(":")
+    expander.showTag(node, closing=False)
+    target = expander.env.find(target_name)
+    for value in target:
+        expander.env.push({index_name: value})
+        for child in node.children:
+            expander.walk(child) # our handler needs to call this for the if body
+        expander.env.pop()
+    return False
+
+def close(expander, node):
+    expander.showTag(node, closing=True)
+
+#+end_src
+
+- NOTE :: the z_loop ~open~ function always returns False.
+  If it didn't then, ~Visitor~ would have recursed.
+  In this way it hijacks what the ~Visitor~ would have done with its own implementation.
+
+#+caption: Not done until we test it
+#+begin_src html :tangle ./src/ch12/loop.templ
+<html>
+  <body>
+    <ul z-loop="item:names">
+      <li><span z-var="item"/></li>
+    </ul>
+  </body>
+</html>
+#+end_src
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch12/template.py \
+   ./src/ch12/vars.json \
+   ./src/ch12/loop.templ
+#+end_src
+
+#+RESULTS:
+#+begin_example
+<html>
+<body>
+<ul>
+<li><span>Johnson</span></li>
+
+<li><span>Vaughan</span></li>
+
+<li><span>Jackson</span></li>
+</ul>
+</body>
+</html>
+#+end_example
+
+*** Final
+- WOW :: We have just implemented another simple programming language like the one in [[*Chapter 7: An Interpreter][Chapter 7: An Interpreter]].
+
+It’s unlikely that anyone would want to use it as-is, but adding a new feature is now as simple as writing a matching pair of open and close functions.

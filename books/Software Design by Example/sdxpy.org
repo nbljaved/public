@@ -3740,12 +3740,285 @@ def analyze_and_save(options, archiver):
 
 - Strength of OOP :: This example highlights one of the strengths of object-oriented programming: it allows old code to use new code without any changes.
 
-* TODO Chapter 11: An HTML Validator
+* Chapter 11: An HTML Validator
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/check/
 :header-args:python: :session ch11 :results output :async yes :eval no
 :header-args:sh: :session ch11-sh :results output :async yes
 :END:
+
+** Summary
+:PROPERTIES:
+:ID:       d7cf25df-a9fd-4991-a251-00387dd5bfa3
+:END:
+
+- HTML consists of text and of elements represented by tags with attributes.
+- HTML is represented in memory as a Document Object Model (DOM) tree.
+
+- Trees are usually processed using recursion.
+
+- The Visitor design pattern is often used to perform an action for each member of a data structure.
+
+- We can summarize and check the structure of an HTML page by visiting each node and recording what we find there.
+
+Suppose we want to generate web pages to show the results of data analyses.
+
+We want to check that these pages all have the same structure so that people can find things in them, and that they meet accessibility standards so that everyone can find things in them.
+
+This chapter builds a small tool to do this checking, which introduces ideas we will use in building a page generator ([[*Chapter 12: A Template Expander][Chapter 12: A Template Expander]]) and another to check the structure and style of our code ([[*Chapter 13: A Code Linter][Chapter 13: A Code Linter]]).
+
+HTML is probably the most widely used data format in the world today; Figure 11.3 summarizes how it is represented and processed.
+
+#+caption: Concept map for Checking HTML using Visitor patter
+[[file:images/Chapter_11:_An_HTML_Validator/2025-09-01_16-31-27_screenshot.png]]
+
+** Theory
+*** HTML and the DOM
+:PROPERTIES:
+:ID:       4a1c9567-25ad-40c2-a9fd-27f7187a3e8e
+:END:
+In HTML, a document’s elements form a tree of nodes and text like the one shown in Figure 11.1.
+
+#+caption: Representing HTML elements as a DOM tree
+[[file:images/Chapter_11:_An_HTML_Validator/2025-09-01_16-34-24_screenshot.png]]
+
+This figure also shows that opening and self-closing tags can have attributes, which are written as key="value". For example, if we want to put an image in an HTML page, we specify the image file’s name using the src attribute of the img tag:
+
+#+begin_src html
+<img src="banner.png" />
+#+end_src
+
+The objects that represent the nodes and text in an HTML tree are called the Document Object Model or *DOM*. Hundreds of tools have been written to convert HTML text to DOM; our favorite is a Python module called 'Beautiful Soup', which can handle messy real-world documents as well as those that conform to every rule of the standard.
+
+Beautiful Soup’s DOM has two main classes: =NavigableString= for text and =Tag= for elements. To parse a document, we import what we need and call BeautifulSoup with the text to be parsed and a string specifying exactly what kind of parsing we want to do. (In practice, this is almost always "html.parser".)
+
+#+begin_src python :tangle ./src/ch11/parse.py :noweb yes
+from bs4 import BeautifulSoup, NavigableString, Tag
+
+text = """<html>
+<body>
+<h1>Title</h1>
+<p>paragraph</p>
+</body>
+</html>"""
+
+<<display-12>>
+
+doc = BeautifulSoup(text, "html.parser")
+display(doc)
+#+end_src
+
+Tag nodes have two properties name and children to tell us what element the tag represents and to give us access to the node’s children, i.e., the nodes below it in the tree. We can therefore write a short recursive function to show us everything in the DOM:
+
+#+name: display-12
+#+begin_src python
+def display(node):
+    if isinstance(node, NavigableString):
+        print(f"string: {repr(node.string)}")
+        return
+    else:
+        print(f"node: {node.name}")
+        for child in node:
+            display(child)
+#+end_src
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch11/parse.py
+#+end_src
+
+#+RESULTS:
+#+begin_example
+node: [document]
+node: html
+string: '\n'
+node: body
+string: '\n'
+node: h1
+string: 'Title'
+string: '\n'
+node: p
+string: 'paragraph'
+string: '\n'
+string: '\n'
+#+end_example
+
+- NOTE :: Notice in the output that the line breaks in the HTML (in ~text~ variable) have been turned into text nodes containing only a newline character.
+
+  - It’s easy to forget about these when writing code that processes pages. (True)
+
+The last bit of the DOM that we need is its representation of /attributes/.
+Each =Tag= node has a dictionary called ~attrs~ that stores the node’s attributes.
+The values in this dictionary are either strings or lists of strings depending on whether the attribute has a single value or multiple values:
+
+#+begin_src python :tangle ./src/ch11/attrs.py
+from bs4 import BeautifulSoup, NavigableString, Tag
+
+text = """<html lang="en">
+<body class="outline narrow">
+<p align="left" align="right">paragraph</p>
+</body>
+</html>"""
+
+def display(node):
+    if isinstance(node, Tag):
+        print(f"node: {node.name} {node.attrs}")
+        for child in node:
+            display(child)
+
+doc = BeautifulSoup(text, "html.parser")
+display(doc)
+#+end_src
+
+#+begin_src sh
+uv run --with beautifulsoup4 ./src/ch11/attrs.py
+#+end_src
+
+#+RESULTS:
+: node: [document] {}
+: node: html {'lang': 'en'}
+: node: body {'class': ['outline', 'narrow']}
+: node: p {'align': 'right'}
+
+*** The Visitor Pattern
+:PROPERTIES:
+:ID:       3f4c15db-e479-4a6e-b022-ea0272e85ee6
+:END:
+
+- Visitor patter ::
+  A design pattern in which the operation to be done is taken to each element of a data structure in turn.
+
+  It is usually implemented by having a generator “visitor” that knows how to reach the structure’s elements, which is GIVEN a function or method to call for each in turn, and that carries out the specific operation.
+
+  - NOTE :: the more complicated the data structure is, the more helpful the Visitor pattern becomes.
+
+A visitor is a class that knows how to get to each element of a data structure and call a user-defined method when it gets there. Our visitor will have three methods:
+
+- one that it calls when it first encounters a node,
+- one that it calls when it is finished with that node, and
+- one that it calls for text
+
+#+begin_src python :tangle ./src/ch11/visitor.py
+class Visitor:
+    def visit(self, node):
+        if isinstance(node, NavigableString):
+            self._text(node)
+
+        elif isinstance(node, Tag):
+            self._tag_enter(node)
+            for child in node:
+                self.visit(child)
+            self._tag_exit(node)
+
+    def _tag_enter(self, node): pass
+
+    def _tag_exit(self, node): pass
+
+    def _text(self, node): pass
+#+end_src
+
+#+caption: Visitor checking each node in depth-first order (like DFS)
+[[file:images/Chapter_11:_An_HTML_Validator/2025-09-01_16-49-25_screenshot.png]]
+
+- NOTE :: We provide /do-nothing/ implementations of the three action methods rather than having them raise a =NotImplementedError= because a particular use of our Visitor class may not need some of these methods.
+
+  For example, our catalog builder didn’t need to do anything when leaving a node or for text nodes, and we shouldn’t require people to implement things they don’t need.
+
+Here’s what our catalog builder looks like when re-implemented on top of our Visitor class:
+
+#+begin_src python :tangle ./src/ch11/catalog.py
+import sys
+from visitor import Visitor
+
+class Catalog(Visitor):
+    def __init__(self):
+        super().__init__()
+        self.catalog = {}
+
+    def _tag_enter(self, node):
+        if node.name not in self.catalog:
+            self.catalog[node.name] = set()
+        for child in node:
+            if isinstance(child, Tag):
+                self.catalog[node.name].add(child.name)
+
+with open(sys.argv[1], "r") as reader:
+    text = reader.read()
+doc = BeautifulSoup(text, "html.parser")
+
+cataloger = Catalog()
+cataloger.visit(doc.html)
+result = cataloger.catalog
+
+for tag, contents in sorted(result.items()):
+    print(f"{tag}: {', '.join(sorted(contents))}")
+
+#+end_src
+
+*** Checking Style
+
+To wrap up our style checker, let’s create a manifest that specifies which types of nodes can be children of which others:
+
+#+begin_src yaml :tangle ./src/ch11/manifest.yml
+body:
+- section
+head:
+- title
+html:
+- body
+- head
+section:
+- h1
+- p
+- ul
+ul:
+- li
+#+end_src
+
+We’ve chosen to use YAML for the manifest because it’s a relatively simple way to write nested rules. JSON would have worked just as well, but as we said in [[*Chapter 5: Parsing Text][Chapter 5: Parsing Text]], we shouldn’t invent a syntax of our own: there are already too many in the world.
+
+Our ~Check~ class needs a constructor to set everything up and a ~_tag_enter~ method to handle nodes:
+
+#+begin_src python :tangle ./src/ch11/check.py
+class Check(Visitor):
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.problems = {}
+
+    def _tag_enter(self, node):
+        actual = {child.name for child in node
+                  if isinstance(child, Tag)}
+        errors = actual - self.manifest.get(node.name, set()) # V.Nice !!!
+        if errors:
+            errors |= self.problems.get(node.name, set())
+            self.problems[node.name] = errors
+
+#+end_src
+
+- NOTE :: See how cleanly we implement the manner to determine which node's are breaking the rules in our manifest.
+  We do a set difference, i.e ~errors = actual - allowed~.
+
+To run this, we load a manifest and an HTML document, create a checker, ask the checker to visit each node, then print out every problematic parent-child combination it found:
+
+#+begin_src python :tangle ./src/ch11/check.py
+def read_manifest(filename):
+    with open(filename, "r") as reader:
+        result = yaml.load(reader, Loader=yaml.FullLoader)
+        for key in result:
+            result[key] = set(result[key]) # convert values from list -> set
+        return result
+
+manifest = read_manifest(sys.argv[1])
+with open(sys.argv[2], "r") as reader:
+    text = reader.read()
+doc = BeautifulSoup(text, "html.parser")
+
+checker = Check(manifest)
+checker.visit(doc.html)
+for key, value in checker.problems.items():
+    print(f"{key}: {', '.join(sorted(value))}")
+
+#+end_src
+
 * Chapter 12: A Template Expander
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/template/
@@ -4394,3 +4667,10 @@ uv run --with beautifulsoup4 ./src/ch12/template.py \
 - WOW :: We have just implemented another simple programming language like the one in [[*Chapter 7: An Interpreter][Chapter 7: An Interpreter]].
 
 It’s unlikely that anyone would want to use it as-is, but adding a new feature is now as simple as writing a matching pair of open and close functions.
+
+* TODO Chapter 13: A Code Linter
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/lint/
+:header-args:python: :session ch13 :results output :async yes :eval no
+:header-args:sh: :session ch13-sh :results output :async yes
+:END:

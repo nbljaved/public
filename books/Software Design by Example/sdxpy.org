@@ -4674,3 +4674,371 @@ It’s unlikely that anyone would want to use it as-is, but adding a new feature
 :header-args:python: :session ch13 :results output :async yes :eval no
 :header-args:sh: :session ch13-sh :results output :async yes
 :END:
+
+** Summary
+:PROPERTIES:
+:ID:       8e394afc-5835-4a6d-9de7-6fd6fd5e7f8f
+:END:
+
+ - A linter checks that a program conforms to a set of style and usage rules.
+ - Linters /typically use/ the Visitor design pattern to find nodes of interest in an abstract syntax tree.
+
+ - Programs CAN MODIFY a program's AST and then unparse it to create modified versions of the original program.
+ - Dynamic code modification is very powerful, BUT the technique can produce insecure and unmaintainable code.
+
+Checking tools are often called *linters* because an early tool like this that found fluff in C programs was called /lint/.
+Many projects insist that code pass linting checks before being committed to version control.
+
+To show how linters work, this chapter builds a trio of tools that:
+ * find duplicate keys in dictionaries,
+ * look for unused variables, and
+ * create a table showing which classes in a hierarchy define which methods.
+
+#+caption: Concepts for code manipulation
+[[file:images/Chapter_13:_A_Code_Linter/2025-09-02_17-07-17_screenshot.png]]
+
+** Theory
+*** Machinery
+:PROPERTIES:
+:ID:       8ce28f1f-b373-4eca-a775-530a19f31e61
+:END:
+
+[[*Chapter 11: An HTML Validator][Chapter 11: An HTML Validator]] represented HTML as a DOM tree.
+We can also represent the structure of a program as an abstract syntax tree (AST) whose nodes represent functions, statements, variables, array indexing operations, and so on.
+
+Python’s [[https://docs.python.org/3/library/ast.html][ast]] module will parse Python source code and produce an AST for us.
+For example, [[Figure 13.1]] shows key parts of the AST for the short program shown below:
+
+#+begin_src python :tangle ./src/ch13/simple.py
+def double(x):
+    return 2 * x
+
+result = double(3)
+print(result)
+#+end_src
+
+#+name: Figure 13.1
+#+caption: The abstract syntax tree for a simple Python program.
+[[file:images/Chapter_13:_A_Code_Linter/2025-09-02_17-09-53_screenshot.png]]
+
+We said “key parts of the AST” because the complete structure contains many details that we haven’t bothered to draw. To see them, let’s use ~ast.parse~ to turn our example code into an AST and ~ast.dump~ to display it:
+
+#+begin_src python :eval yes :tangle ./src/ch13/dump_ast.py
+import ast
+import sys
+
+with open(sys.argv[1], "r") as reader:
+    source = reader.read()
+
+tree = ast.parse(source)
+print(ast.dump(tree, indent=4))
+#+end_src
+
+#+begin_src sh
+uv run ./src/ch13/dump_ast.py ./src/ch13/simple.py
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Module(
+    body=[
+        FunctionDef(
+            name='double',
+            args=arguments(
+                posonlyargs=[],
+                args=[
+                    arg(arg='x')],
+                kwonlyargs=[],
+                kw_defaults=[],
+                defaults=[]),
+            body=[
+                Return(
+                    value=BinOp(
+                        left=Constant(value=2),
+                        op=Mult(),
+                        right=Name(id='x', ctx=Load())))],
+            decorator_list=[],
+            type_params=[]),
+        Assign(
+            targets=[
+                Name(id='result', ctx=Store())],
+            value=Call(
+                func=Name(id='double', ctx=Load()),
+                args=[
+                    Constant(value=3)],
+                keywords=[])),
+        Expr(
+            value=Call(
+                func=Name(id='print', ctx=Load()),
+                args=[
+                    Name(id='result', ctx=Load())],
+                keywords=[]))],
+    type_ignores=[])
+#+end_example
+
+The node representing the definition of the function double is a =FunctionDef= node with a /name/ and an /arguments/ sub-node that stores information about the function’s arguments.
+
+- If we want a list of all the functions defined in this module, we can walk through this tree to find all the ~FunctionDef~ nodes and record their name properties.
+
+  - Since each node’s structure is a little different, we would have to write one function for each type of node that knew which fields of that node were worth exploring.
+    (True)
+
+Luckily for us the ~ast~ module has tools to do this for us.
+The class ~ast.NodeVisitor~ uses the now-familiar Visitor design pattern to recurse through a structure like the one in [[Figure 13.1]].
+
+Each time the visitor reaches a node of type /Thing/, it looks for a method called /visit_Thing/;
+for example, when it reaches a =FunctionDef= node it looks for ~visit_FunctionDef~. If that method has been defined, ~NodeVisitor~ calls it with the node as an argument.
+
+The class ~CollectNames~ uses this machinery to create a list of the function and variable names defined in a program:
+
+#+begin_src python :tangle ./src/ch13/walk_ast.py
+import ast
+import sys
+
+class CollectNames(ast.NodeVisitor):
+    def __init__(self):
+        super().__init__()
+        self.names = {} # this is a dict (NOT a set !)
+
+    def visit_Assign(self, node):
+        # see 'targets' in 'Assign' of our ast dump of the previous example
+        for var in node.targets:
+            self.add(var, var.id)
+        self.generic_visit(node) # generic_visit is a NodeVisitor method
+
+    def visit_FunctionDef(self, node):
+        self.add(node, node.name)
+        self.generic_visit(node)
+
+    def add(self, node, name):
+        loc = (node.lineno, node.col_offset)
+        self.names[name] = self.names.get(name, set())
+        self.names[name].add(loc)
+
+    def position(self, node):
+        return ({node.lineno}, {node.col_offset})
+
+#+end_src
+
+A few things worth noting about this class are:
+
+1. The constructor of ~CollectNames~ invokes the constructor of ~NodeVisitor~ using ~super().__init__()~ before doing anything else.
+
+2. The methods ~visit_Assign~ and ~visit_FunctionDef~ must call ~self.generic_visit(node)~ explicitly to recurse down through their children.
+
+   - By requiring this to be explicit, ~NodeVisitor~ gives programmers control on whether and when recursion takes place.
+
+3. The method ~position~ relies on the fact that every node in the AST keeps track of where in the source code it came from.
+
+To use this class, we read the source of the program that we want to analyze, parse it, and then call the visit method of our class to trigger recursion:
+
+#+begin_src python :tangle ./src/ch13/walk_ast.py
+with open(sys.argv[1], 'r') as reader:
+    source = reader.read()
+tree = ast.parse(source)
+collector = CollectNames()
+collector.visit(tree)
+print(collector.names)
+#+end_src
+
+#+begin_src sh
+uv run ./src/ch13/walk_ast.py ./src/ch13/simple.py
+#+end_src
+
+#+RESULTS:
+: {'double': {(1, 0)}, 'result': {(4, 0)}}
+
+With a little more work we could record class names as well, and then check that (for example) class names use CamelCase, while function and variable names use pothole_case.
+
+*** Finding Duplicate Keys
+
+Many programs store their configuration in dictionaries. As those dictionaries grow larger, it’s easy for programmers to redefine values by accident.
+
+For example, the dictionary in this short piece of code has two entries for the key "third":
+#+name: has_duplicate_keys
+#+begin_src python :eval yes :tangle ./src/ch13/has_duplicate_keys.py
+has_duplicates = {
+    "third": 3,
+    "fourth": 4,
+    "fourth": 5,
+    "third": 6
+}
+print(has_duplicates)
+#+end_src
+
+Python could treat this as an error, keep the first entry, keep the last entry, or concatenate the entries somehow. As the output below shows, it chooses the third option:
+
+#+RESULTS:
+: {'third': 6, 'fourth': 5}
+
+We can build a linter that finds dictionaries like has_duplicates with just a few lines of code and the ~Counter~ class from Python’s ~collections~ module (which implements a specialized dictionary that counts how many times a key has been seen).
+
+We define a ~visit_Dict~ method for ~NodeVisitor~ that adds each constant key to the counter, then look for keys that have been seen more than once:
+
+#+begin_src python :eval yes :noweb yes :tangle ./src/ch13/find_duplicate_keys.py
+import ast
+from collections import Counter
+
+class FindDuplicateKeys(ast.NodeVisitor):
+    def visit_Dict(self, node):
+        seen = Counter()
+        for key in node.keys:
+            if isinstance(key, ast.Constant):
+                seen[key.value] += 1
+        problems = {k for (k,v) in seen.items() if v > 1}
+        self.report(node, problems)
+        self.generic_visit(node)
+
+    def report(self, node, problems):
+        if problems:
+            msg = ', '.join(p for p in problems)
+            print(f'duplicates key(s) {{{msg}}} at {node.lineno}')
+
+tree = ast.parse("""
+<<has_duplicate_keys>>
+""")
+duplicates = FindDuplicateKeys()
+duplicates.visit(tree)
+#+end_src
+
+#+RESULTS:
+: duplicates key(s) {fourth, third} at 2
+
+#+caption: As Far As We Can Go
+#+begin_quote
+FindDuplicateKeys only considers constant keys, which means it won’t find duplicate keys that are created on the fly like this:
+
+#+begin_src python
+def label():
+    return "label"
+
+actually_has_duplicate_keys = {
+    "label": 1,
+    "la" + "bel": 2,
+    label(): 3,
+    "".join(["l", "a", "b", "e", "l"]): 4,
+}
+#+end_src
+
+We could try adding more code to handle this, but there are so many different ways to generate keys on the fly that our linter couldn’t possibly catch them all.
+
+The possibility of false negatives doesn’t mean that linting is useless, though: every problem that linting catches gives programmers more time to check for things that linters can’t find.
+#+end_quote
+
+*** Finding Unused Variables
+
+Finding unused variables -- ones that are assigned values but never used -- is more challenging than our previous examples.
+
+The problem is /scope/: a variable defined in a function or method might have the same name as one defined elsewhere, but they are different variables.
+
+Let’s start by defining a class that handles variables in modules and functions. Since functions can be defined inside modules and other functions, the constructor for our class creates a list that we will /use as a stack to keep track of what scopes/ we’re currently in:
+
+#+begin_src python :noweb yes :tangle ./src/ch13/find_unused_variables.py
+import ast
+import sys
+<<Scope-14>>
+
+class FindUnusedVariables(ast.NodeVisitor):
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+
+    def visit_Module(self, node):
+        self.search('global', node)
+
+    def visit_FunctionDef(self, node):
+        self.search(node.name, node)
+
+    <<search, check>>
+
+    <<visit_Name>>
+#+end_src
+
+We could just use a list of three values to record information for each scope, but using namedtuple (which also comes from Python’s collections module) tells readers explicitly what each scope consists of:
+
+#+name: Scope-14
+#+begin_src python
+from collections import namedtuple
+
+Scope = namedtuple("Scope", ["name", "load", "store"])
+Scope(1,2,3)
+# => Scope(name=1, load=2, store=3)
+#+end_src
+
+Each time we encounter a new scope we push a new ~Scope~ triple onto the stack with a name, a set to hold the variables that are used in the scope, and another set to hold the variables that are defined in the scope.
+
+We then call ~NodeVisitor.generic_visitor~ to trigger recursion, pop the record we just pushed off the stack, and report any problems:
+
+#+name: search, check
+#+begin_src python
+def search(self, name, node):
+    self.stack.append(Scope(name, set(), set()))
+    self.generic_visit(node)
+    scope = self.stack.pop()
+    self.check(scope)
+
+def check(self, scope):
+    unused = scope.store - scope.load
+    if unused:
+        names = ", ".join(sorted(unused))
+        print(f'unused in {scope.name}: {names}')
+
+#+end_src
+
+We haven't yet been adding anything to our ~Scope~.
+
+- The last part of the puzzle is ~visit_Name~.
+  * If the variable’s value is being read, the node will have a property ~.ctx~ (short for “context”) of type =ast.Load=.
+  * If the variable is being written to, the node’s ~.ctx~ property will be an instance of =ast.Store=.
+
+Checking this property allows us to put the name in the right set in the scope that’s at the top of the stack:
+
+#+name: visit_Name
+#+begin_src python
+def visit_Name(self, node):
+    if isinstance(node.ctx, ast.Load):
+        self.stack[-1].load.add(node.id)
+    elif isinstance(node.ctx, ast.Store):
+        self.stack[-1].store.add(node.id)
+    else:
+        assert False, f'Unknown context'
+    self.generic_visit(node)
+
+#+end_src
+
+Once again, we can run this by reading the source of a program, converting it to an AST, constructing an instance of ~FindUnusedVariables~, and running its ~visit~ method:
+
+#+begin_src python :tangle ./src/ch13/find_unused_variables.py
+with open(sys.argv[1], "r") as reader:
+    source = reader.read()
+tree = ast.parse(source)
+finder = FindUnusedVariables()
+finder.visit(tree)
+#+end_src
+
+#+caption: a program that has some unused variables
+#+begin_src python :tangle ./src/ch13/has_unused_variables.py
+used = 3
+distractor = 2
+not_used = used + distractor
+
+
+def no_unused(param):
+    result = 2 * param
+    return result
+
+
+def has_unused(param):
+    used = 3 * param
+    not_used = 2 * param
+    distractor = "distraction"
+    return used
+#+end_src
+
+#+begin_src sh
+uv run ./src/ch13/find_unused_variables.py ./src/ch13/has_unused_variables.py
+#+end_src
+
+#+RESULTS:
+: unused in has_unused: distractor, not_used
+: unused in global: not_used

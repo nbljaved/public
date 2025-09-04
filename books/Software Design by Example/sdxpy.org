@@ -4668,7 +4668,7 @@ uv run --with beautifulsoup4 ./src/ch12/template.py \
 
 It’s unlikely that anyone would want to use it as-is, but adding a new feature is now as simple as writing a matching pair of open and close functions.
 
-* TODO Chapter 13: A Code Linter
+* Chapter 13: A Code Linter
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/lint/
 :header-args:python: :session ch13 :results output :async yes :eval no
@@ -5017,7 +5017,7 @@ finder.visit(tree)
 #+end_src
 
 #+caption: a program that has some unused variables
-#+begin_src python :tangle ./src/ch13/has_unused_variables.py
+#+begin_src python :eval yes :tangle ./src/ch13/has_unused_variables.py
 used = 3
 distractor = 2
 not_used = used + distractor
@@ -5025,7 +5025,7 @@ not_used = used + distractor
 
 def no_unused(param):
     result = 2 * param
-    return result
+    return result * not_used
 
 
 def has_unused(param):
@@ -5033,7 +5033,12 @@ def has_unused(param):
     not_used = 2 * param
     distractor = "distraction"
     return used
+
+print(no_unused(1))
 #+end_src
+
+#+RESULTS:
+: 10
 
 #+begin_src sh
 uv run ./src/ch13/find_unused_variables.py ./src/ch13/has_unused_variables.py
@@ -5042,3 +5047,15 @@ uv run ./src/ch13/find_unused_variables.py ./src/ch13/has_unused_variables.py
 #+RESULTS:
 : unused in has_unused: distractor, not_used
 : unused in global: not_used
+
+- NOTE :: We are NOT finding ALL unused 'variables' (in a sense functions are also variables but we aren't checking for those).
+  - Wrong :: ~not_used~ was utilised in the ~def no_unused~ function definition, but we are still saying that it wasn't used in the 'global' scope.
+
+    To fix this, we need to add a loaded variable to not the topmost ~Scope~, but the scope that we get it from.
+
+* TODO Chapter 14: A Code Linter
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/layout/
+:header-args:python: :session ch14 :results output :async yes :eval no
+:header-args:sh: :session ch14-sh :results output :async yes
+:END:

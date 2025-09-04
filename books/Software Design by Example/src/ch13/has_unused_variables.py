@@ -5,7 +5,7 @@ not_used = used + distractor
 
 def no_unused(param):
     result = 2 * param
-    return result
+    return result * not_used
 
 
 def has_unused(param):
@@ -13,3 +13,5 @@ def has_unused(param):
     not_used = 2 * param
     distractor = "distraction"
     return used
+
+print(no_unused(1))

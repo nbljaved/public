@@ -5053,9 +5053,554 @@ uv run ./src/ch13/find_unused_variables.py ./src/ch13/has_unused_variables.py
 
     To fix this, we need to add a loaded variable to not the topmost ~Scope~, but the scope that we get it from.
 
-* TODO Chapter 14: A Code Linter
+* Chapter 14: A Code Linter
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/layout/
 :header-args:python: :session ch14 :results output :async yes :eval no
 :header-args:sh: :session ch14-sh :results output :async yes
 :END:
+** Summary
+
+- A layout engine places page elements based on their size and organization.
+- Page elements are organized as a tree of basic blocks, rows, and columns.
+- The layout engine calculates the position of each block based on its size and the position of its parent.
+- Drawing blocks on /top of each other/ is an easy way to render them.
+
+- Use multiple inheritance and *mixin classes* to inject methods into classes.
+
+You might be reading this as HTML in your browser, as an e-book, or on the printed page.
+In all three cases a layout engine took some text and some layout instructions and decided where to put each character and image.
+
+To explore how they work, we will build a small layout engine based on [[https://limpet.net/mbrubeck/2014/08/08/toy-layout-engine-1.html][Matt Brubeck’s tutorial]] and on Pavel Panchekha and Chris Harrelson’s book [[https://browser.engineering/][Web Browser Engineering]]. Since our focus is layout, we will create objects ourselves to represent DOM nodes rather than parsing HTML.
+
+** Theory
+*** Sizing
+:PROPERTIES:
+:ID:       6ebc6cc0-e25a-49a9-9613-fba903f5adfe
+:END:
+
+Let’s start on easy mode without margins, padding, line-wrapping, or other complications. Everything we can put on the screen is represented as a rectangular cell, and every cell is either a row, a column, or a block.
+A block has a fixed width and height:
+
+#+begin_src python :tangle ./src/ch14/easy_mode.py
+class Block:
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+
+    def get_width(self):
+        return self.width
+
+    def get_height(self):
+        return self.height
+
+#+end_src
+
+#+caption: The coordinate systems for screens puts (0, 0) in the upper-left corner
+[[file:images/Chapter_14:_A_Code_Linter/2025-09-06_18-10-32_screenshot.png]]
+
+A row arranges one or more cells horizontally; its width is the sum of the widths of its children, while its height is the height of its tallest child
+
+#+caption: Calculating sizes of blocks with fixed height and width
+[[file:images/Chapter_14:_A_Code_Linter/2025-09-06_18-11-07_screenshot.png]]
+
+#+begin_src python :tangle ./src/ch14/easy_mode.py
+class Row:
+    def __init__(self, *children):
+        self.children = list(children)
+
+    def get_width(self):
+        return sum([c.get_width() for c in self.children])
+
+    def get_height(self):
+        return max(
+            [c.get_height() for c in self.children],
+            default=0
+        )
+
+#+end_src
+
+Finally, a column arranges one or more cells vertically: its width is the width of its widest child and its height is the sum of the heights of its children. (Here and elsewhere, we use the abbreviation col when referring to columns.)
+
+#+begin_src python :tangle ./src/ch14/easy_mode.py
+class Col:
+    def __init__(self, *children):
+        self.children = list(children)
+
+    def get_width(self):
+        return max(
+            [c.get_width() for c in self.children],
+            default=0
+        )
+
+    def get_height(self):
+        return sum([c.get_height() for c in self.children])
+
+#+end_src
+
+Rows and columns nest inside one another.
+A row cannot span two or more columns, and a column cannot cross the boundary between two rows.
+
+- We can therefore represent our document as a tree and calculate the width and height of each cell every time we need it.
+
+  - This is simple BUT /INEFFICIENT/: we could calculate both width and height at the same time and cache those values to avoid recalculation, but we called this “easy mode” for a reason.
+
+As simple as it is, this code could still contain errors (and did during development), so we write some tests to check that it works properly before trying to build anything more complicated. One such test is:
+
+#+begin_src python :tangle ./src/ch14/test_easy_mode.py
+from easy_mode import Block, Col, Row
+
+def test_lays_out_a_grid_of_rows_of_columns():
+    fixture = Col(
+        Row(Block(1, 2), Block(3, 4)),
+        Row(Block(5, 6), Col(Block(7, 8), Block(9, 10)))
+    )
+    assert fixture.get_width() == 14
+    assert fixture.get_height() == 22
+
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch14/
+#+end_src
+
+#+RESULTS:
+: ============================================= test session starts =============================================
+: platform linux -- Python 3.12.11, pytest-8.4.2, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 1 item
+:
+: src/ch14/test_easy_mode.py .                                                                            [100%]
+:
+: ============================================== 1 passed in 0.00s ==============================================
+
+*** Positioning
+:PROPERTIES:
+:ID:       05f64b0b-a24c-4109-a754-459837de29ef
+:END:
+Once we know how big cells are, we can figure out where to put them.
+
+Suppose we start with the upper-left corner of the browser: upper because we lay out the page top-to-bottom and left because we are doing left-to-right layout.
+
+#+caption: Laying out rows and columns of fixed-size blocks
+[[file:images/Chapter_14:_A_Code_Linter/2025-09-06_18-18-40_screenshot.png]]
+
+- If the cell is a block, we place it there.
+- If the cell is a row, on the other hand, we get its height and then calculate its lower edge as y1 = y0 + height.
+  We then place the first child’s upper-left corner at (x0, y1-height0), the second child’s at (x0 + width0, y1-height1), and so on
+- Similarly, if the cell is a column, we place the first child at (x0, y0), the next at (x0, y0 + height0), and so on.
+
+To save ourselves some work, we will derive the classes that know how to do layout from the classes we wrote before. Basic blocks are:
+
+#+begin_src python :tangle ./src/ch14/placed.py
+from easy_mode import Block, Col, Row
+
+class PlacedBlock(Block):
+    def __init__(self, width, height):
+        super().__init__(width, height)
+        self.x0 = None
+        self.y0 = None
+
+    def place(self, x0, y0):
+        self.x0 = x0
+        self.y0 = y0
+
+    def report(self):
+        return [
+            "block",
+            self.x0, self.y0,
+            self.x0 + self.width, self.y0 + self.height
+        ]
+
+#+end_src
+
+The constructor and reporting method for the PlacedCol class looks much the same. Its placement method is:
+
+#+begin_src python :tangle ./src/ch14/placed.py
+class PlacedCol(Col):
+    def __init__(self, *children):
+        super().__init__(*children)
+        assert isinstance(self.children, list)
+        self.x0 = None
+        self.y1 = None
+
+    def place(self, x0, y0):
+        self.x0 = x0
+        self.y0 = y0
+        y_current = self.y0
+        for child in self.children:
+            child.place(x0, y_current)
+            y_current += child.get_height()
+
+    def report(self):
+        return [
+            "col",
+            self.x0, self.y0,
+            self.x0 + self.get_width(), self.y0 + self.get_height(),
+        ] + [c.report() for c in self.children]
+
+#+end_src
+
+while
+
+#+begin_src python :tangle ./src/ch14/placed.py
+class PlacedRow(Row):
+    def __init__(self, *children):
+        super().__init__(*children)
+        assert isinstance(self.children, list)
+        self.x0 = None
+        self.y0 = None
+
+    def place(self, x0, y0):
+        self.x0 = x0
+        self.y0 = y0
+        y1 = self.y0 + self.get_height()
+        x_current = x0
+        for child in self.children:
+            child_y = y1 - child.get_height()
+            child.place(x_current, child_y)
+            x_current += child.get_width()
+
+    def report(self):
+        return [
+            "row",
+            self.x0,
+            self.y0,
+            self.x0 + self.get_width(),
+            self.y0 + self.get_height(),
+        ] + [c.report() for c in self.children]
+
+#+end_src
+
+Once again, we write and run some tests to check that everything is doing what it’s supposed to. One such test is:
+
+#+begin_src python :tangle ./src/ch14/test_placed.py
+from placed import (PlacedBlock as Block,
+                    PlacedCol as Col,
+                    PlacedRow as Row,
+                    )
+
+def test_places_a_column_of_two_blocks():
+    fixture = Col(Block(1, 1), Block(2, 4))
+    fixture.place(0, 0)
+    assert fixture.report() == [
+        "col",
+        0, 0, 2, 5,
+        ["block", 0, 0, 1, 1],
+        ["block", 0, 1, 2, 5],
+    ]
+
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch14/
+#+end_src
+
+#+RESULTS:
+: ============================================= test session starts =============================================
+: platform linux -- Python 3.12.11, pytest-8.4.2, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 2 items
+:
+: src/ch14/test_easy_mode.py .                                                                            [ 50%]
+: src/ch14/test_placed.py .                                                                               [100%]
+:
+: ============================================== 2 passed in 0.01s ==============================================
+
+*** Rendering
+:PROPERTIES:
+:ID:       13b5a023-b868-43ac-add5-cf493da57d52
+:END:
+
+We drew blocks on graph paper to figure out the expected answers for the tests shown above.
+
+We can do something similar in software by creating a “screen” of space characters and having each block draw itself in the right place. If we start at the root of the tree, children will overwrite the marks made by their parents, which will automatically produce the right appearance.
+
+#+caption: Render blocks by drawing child nodes on top of parent nodes.
+[[file:images/Chapter_14:_A_Code_Linter/2025-09-06_18-26-55_screenshot.png]]
+
+A more sophisticated version of this called *z-buffering* used in 3D graphics keeps track of the visual depth of each pixel to draw objects correctly regardless of their order.
+- z-buffering ::
+  A drawing method that keeps track of the depth of what lies “under” each pixel so that it displays whatever is nearest to the observer.
+
+Our “screen” is a list of lists of characters, with one inner list for each a row on the screen. (We use lists rather than strings so that we can overwrite characters in place.)
+
+#+begin_src python :tangle ./src/ch14/render.py
+def make_screen(width, height):
+    screen = []
+    for i in range(height):
+        screen.append([" "] * width)
+    return screen
+
+#+end_src
+
+We will use successive lower-case characters to show each block, i.e., the root block will draw itself using ‘a’, while its children will be ‘b’, ‘c’, and so on.
+
+#+begin_src python :tangle ./src/ch14/render.py
+def draw(screen, node, fill=None):
+    fill = next_fill(fill)
+    node.render(screen, fill) # We need to implement this !
+    if hasattr(node, "children"): # Noice
+        for child in node.children:
+            fill = draw(screen, child, fill)
+    return fill
+
+def next_fill(fill):
+    return "a" if fill is None else chr(ord(fill) + 1)
+
+def render(root):
+    root.place(0, 0)
+    width = root.get_width()
+    height = root.get_height()
+    screen = make_screen(width, height)
+    draw(screen, root)
+    return "\n".join("".join(ch) for ch in screen)
+#+end_src
+
+- Note the:
+  - usage of ~hasattr~ :)
+  - usage of ~chr~ and ~ord~
+
+To teach each kind of cell to render itself, we derive new classes from the ones we have and give each of those new classes a render method with the same signature. Since Python supports multiple inheritance, we can do this with a *mixin class*.
+- mixin class ::
+  A class that is not meant to be instantiated itself but which contains methods to be added to other classes (typically via *multiple inheritance*).
+
+The ~Renderable~ mixin is:
+
+#+begin_src python :tangle ./src/ch14/rendered.py
+from placed import PlacedBlock, PlacedRow, PlacedCol
+
+class Renderable:
+    def render(self, screen, fill):
+        for ix in range(self.get_width()):
+            for iy in range(self.get_height()):
+                screen[self.y0 + iy][self.x0 + ix] = fill
+
+#+end_src
+
+Using it, the new cell classes are simply:
+
+#+begin_src python :tangle ./src/ch14/rendered.py
+class RenderedBlock(PlacedBlock, Renderable):
+    pass
+
+class RenderedCol(PlacedCol, Renderable):
+    pass
+
+class RenderedRow(PlacedRow, Renderable):
+    pass
+
+#+end_src
+
+#+caption: Using multiple inheritance and a mixin class to add methods.
+[[file:images/Chapter_14:_A_Code_Linter/2025-09-06_18-31-19_screenshot.png]]
+
+#+caption: (Not) The Right Way To Do It
+#+begin_quote
+If we were building a real layout engine, we would go back and create a class called ~Cell~ with this render method, then derive our ~Block~, ~Row~, and ~Col~ classes from that.
+
+IN GENERAL, if two or more classes need to be able to do something, we should add the required method to their lowest common ancestor.
+
+We’ve chosen not to do that in this case both:
+- to show when and why mixin classes are sometimes useful, and
+- so that we can build and test code incrementally.
+#+end_quote
+
+Simple tests are a little easier to read using rendering, though we still had to draw things on paper to figure out what to expect:
+
+#+begin_src python :tangle ./src/ch14/test_rendered.py
+from render import render
+from rendered import (RenderedBlock as Block,
+                      RenderedCol as Col,
+                      RenderedRow as Row,
+                      )
+
+def test_renders_a_column_of_two_blocks():
+    fixture = Col(Block(1, 1), Block(2, 4))
+    fixture.place(0, 0)
+    expected = "\n".join(["ba", "cc", "cc", "cc", "cc"])
+    assert render(fixture) == expected
+
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch14/
+#+end_src
+
+#+RESULTS:
+#+begin_example
+============================================= test session starts =============================================
+platform linux -- Python 3.12.11, pytest-8.4.2, pluggy-1.6.0
+rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+collected 3 items
+
+src/ch14/test_easy_mode.py .                                                                            [ 33%]
+src/ch14/test_placed.py .                                                                               [ 66%]
+src/ch14/test_rendered.py .                                                                             [100%]
+
+============================================== 3 passed in 0.01s ==============================================
+#+end_example
+
+- NOTE :: The fact that our tests are difficult to understand is a sign that we should do more testing.
+
+  It would be very easy for us to get a wrong result and convince ourselves that it was correct; this kind of /confirmation bias/ is very common in software development.
+
+*** Wrapping
+:PROPERTIES:
+:ID:       952f89fc-2d19-40c6-b264-885ee5a42af8
+:END:
+
+One of the biggest differences between a browser and a printed page is that the text in the browser wraps automatically as the window is resized. (The other, these days, is that the printed page doesn’t spy on us, though someone is undoubtedly working on that.)
+Lol :)
+
+- The first step in adding wrapping to our layout engine is to fix the width of a row.
+
+  If the total width of the children is greater than the row’s width, the layout engine needs to wrap the children around.
+
+  This assumes that:
+  - columns can be made as tall as they need to be, i.e., that we can grow vertically to make up for limited space horizontally
+  - none of a row’s children is wider than the width of the row so that each can fit in a row of its own if necessary
+
+Our layout engine manages wrapping by transforming the tree.
+- The height and width of blocks are fixed, so they become themselves.
+
+- Columns become themselves as well, BUT since they have children that might need to wrap, the class representing columns needs a new method:
+
+#+begin_src python :tangle ./src/ch14/wrapped.py
+from placed import PlacedBlock, PlacedCol, PlacedRow
+
+class WrappedBlock(PlacedBlock):
+    def wrap(self):
+        # NOICE
+        return self
+
+class WrappedCol(PlacedCol):
+    def wrap(self):
+        return PlacedCol(*[c.wrap() for c in self.children])
+
+#+end_src
+
+Rows do all the hard work. :)
+
+Each original row is replaced with a new row that contains a single column with one or more rows, each of which is one “line” of wrapped cells.
+- row :: becomes row -> col -> list of rows (lor)
+  - NOTE :: unlike the below image each row of lor might contain more than one thing as long as they fit in the width of a single row.
+
+#+caption: Wrapping rows by introducing a new row and column.
+[[file:images/Chapter_14:_A_Code_Linter/2025-09-06_18-46-36_screenshot.png]]
+
+This replacement is unnecessary when everything will fit on a single row, but it’s easiest to write the code that does it every time
+(Here if everything did fit in the original row, we would still stransform it into a row->col->[row])
+
+Our new wrappable row’s constructor takes a fixed width followed by the children and returns that fixed width when asked for its size:
+
+#+begin_src python :noweb yes :tangle ./src/ch14/wrapped.py
+class WrappedRow(PlacedRow):
+    def __init__(self, width, *children):
+        super().__init__(*children)
+        assert width >= 0, 'Need non-negative width'
+        self.width = width
+
+    def get_width(self):
+        return self.width
+
+    <<def wrap-14>>
+
+    <<def _bucket-14>>
+#+end_src
+
+Wrapping puts the row’s children into buckets, and then converts the buckets to a row of a column of rows:
+
+#+name: def wrap-14
+#+begin_src python
+def wrap(self):
+    children = [c.wrap() for c in self.children]
+    rows = self._bucket(children)
+    new_rows = [PlacedRow(*bucket) for bucket in rows]
+    new_col = PlacedCol(*new_rows)
+    return PlacedRow(new_col)
+#+end_src
+
+To bucket the children, we add them one at a time to a temporary list. If adding another node would make the total width of the nodes in that list too large, we use that node to start a new temporary list:
+
+#+name: def _bucket-14
+#+begin_src python
+def _bucket(self, children):
+    result = []
+    current_row = []
+    current_x = 0
+
+    for child in children:
+        child_width = child.get_width()
+        if current_x + child_width <= self.width:
+            current_row.append(child)
+            current_x += child_width
+        else:
+            result.append(current_row)
+            current_row = [child]
+            current_x = child_width
+            pass
+
+    result.append(current_row)
+    return result
+#+end_src
+
+Once again, we bring forward all the previous tests and write some new ones to test the functionality we’ve added:
+
+#+begin_src python :tangle ./src/ch14/test_wrapped.py
+from wrapped import WrappedBlock, WrappedRow, WrappedCol
+
+def test_wrap_a_row_of_two_blocks_that_do_not_fit_on_one_row():
+    fixture = WrappedRow(3, WrappedBlock(2, 1), WrappedBlock(2, 1))
+    wrapped = fixture.wrap()
+    wrapped.place(0, 0)
+    assert wrapped.report() == [
+        "row",
+        0, 0, 2, 2,
+        [
+            "col",
+            0, 0, 2, 2,
+            ["row", 0, 0, 2, 1, ["block", 0, 0, 2, 1]],
+            ["row", 0, 1, 2, 2, ["block", 0, 1, 2, 2]],
+        ],
+    ]
+
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch14/
+#+end_src
+
+#+RESULTS:
+#+begin_example
+============================================= test session starts =============================================
+platform linux -- Python 3.12.11, pytest-8.4.2, pluggy-1.6.0
+rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+collected 4 items
+
+src/ch14/test_easy_mode.py .                                                                            [ 25%]
+src/ch14/test_placed.py .                                                                               [ 50%]
+src/ch14/test_rendered.py .                                                                             [ 75%]
+src/ch14/test_wrapped.py .                                                                              [100%]
+
+============================================== 4 passed in 0.01s ==============================================
+#+end_example
+
+- NOTE :: We could have had columns handle resizing rather than rows, but we (probably) don’t need to make both resizeable.
+
+  This is an example of *intrinsic complexity*: the problem REALLY is this hard, so something has to deal with it somewhere.
+
+  Programs often contain *accidental complexity* as well, which can be removed if people are willing to accept change. In practice, that often means that it sticks around longer than it should.
+
+#+caption: The Liskov Substitution Principal
+#+begin_quote
+We are able to re-use tests as our code evolved because of the _Liskov Substitution Principle_, which states that it should be possible to replace objects in a program with objects of derived classes without breaking anything.
+
+In order to satisfy this principle:
+
+- New code must handle the same set of inputs as the old code, though it may be able to process more inputs as well
+
+- Conversely, its output must be a subset of what the old code produced so that whatever is downstream from it won’t be surprised.
+
+Thinking in these terms leads to the methodology called /design by contract/ discussed in [[*Chapter 2: Objects and Classes][Chapter 2: Objects and Classes]].
+#+end_quote

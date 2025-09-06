@@ -5060,6 +5060,9 @@ uv run ./src/ch13/find_unused_variables.py ./src/ch13/has_unused_variables.py
 :header-args:sh: :session ch14-sh :results output :async yes
 :END:
 ** Summary
+:PROPERTIES:
+:ID:       98b2e49a-1738-47e8-9e77-172809a48b5c
+:END:
 
 - A layout engine places page elements based on their size and organization.
 - Page elements are organized as a tree of basic blocks, rows, and columns.
@@ -5072,6 +5075,11 @@ You might be reading this as HTML in your browser, as an e-book, or on the print
 In all three cases a layout engine took some text and some layout instructions and decided where to put each character and image.
 
 To explore how they work, we will build a small layout engine based on [[https://limpet.net/mbrubeck/2014/08/08/toy-layout-engine-1.html][Matt Brubeck’s tutorial]] and on Pavel Panchekha and Chris Harrelson’s book [[https://browser.engineering/][Web Browser Engineering]]. Since our focus is layout, we will create objects ourselves to represent DOM nodes rather than parsing HTML.
+
+Real page layout systems do far more than what we have described, but all of them implement some kind of negotiation between containers and content.
+
+#+caption: Page layout concept map
+[[file:images/Chapter_14:_A_Code_Linter/2025-09-06_19-00-10_screenshot.png]]
 
 ** Theory
 *** Sizing
@@ -5604,3 +5612,10 @@ In order to satisfy this principle:
 
 Thinking in these terms leads to the methodology called /design by contract/ discussed in [[*Chapter 2: Objects and Classes][Chapter 2: Objects and Classes]].
 #+end_quote
+
+* TODO Chapter 15: A Code Linter
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/perf/
+:header-args:python: :session ch15 :results output :async yes :eval no
+:header-args:sh: :session ch15-sh :results output :async yes
+:END:

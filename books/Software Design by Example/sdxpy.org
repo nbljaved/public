@@ -5613,9 +5613,18 @@ In order to satisfy this principle:
 Thinking in these terms leads to the methodology called /design by contract/ discussed in [[*Chapter 2: Objects and Classes][Chapter 2: Objects and Classes]].
 #+end_quote
 
-* TODO Chapter 15: A Code Linter
+* Chapter 15: Performance Profiling
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/perf/
 :header-args:python: :session ch15 :results output :async yes :eval no
 :header-args:sh: :session ch15-sh :results output :async yes
+:END:
+
+Not worthy of notes.
+
+* TODO Chapter 16: Object Persistence
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/persist/
+:header-args:python: :session ch16 :results output :async yes :eval no
+:header-args:sh: :session ch16-sh :results output :async yes
 :END:

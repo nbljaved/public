@@ -5053,7 +5053,7 @@ uv run ./src/ch13/find_unused_variables.py ./src/ch13/has_unused_variables.py
 
     To fix this, we need to add a loaded variable to not the topmost ~Scope~, but the scope that we get it from.
 
-* Chapter 14: A Code Linter
+* Chapter 14: Page Layout
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/layout/
 :header-args:python: :session ch14 :results output :async yes :eval no
@@ -5622,9 +5622,570 @@ Thinking in these terms leads to the methodology called /design by contract/ dis
 
 Not worthy of notes.
 
-* TODO Chapter 16: Object Persistence
+* Chapter 16: Object Persistence
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/persist/
 :header-args:python: :session ch16 :results output :async yes :eval no
 :header-args:sh: :session ch16-sh :results output :async yes
+:END:
+
+** Summary
+:PROPERTIES:
+:ID:       4674411a-5788-445c-a06c-1c13b7342f87
+:END:
+
+- A persistence framework saves and restores objects.
+
+- Persistence must handle /aliasing and circularity/.
+
+- Users should be able to extend persistence to handle objects of their own types.
+- Software designs should be open for extension but closed for modification.
+
+#+caption: Concepts for persistence
+[[file:images/Chapter_16:_Object_Persistence/2025-09-14_17-09-10_screenshot.png]]
+
+*Q.* Version control can keep track of our files, but what should we put in them ?
+
+Plain text works well for things like this chapter, but the data structures used to represent HTML ([[*Chapter 11: An HTML Validator][Chapter 11: An HTML Validator]]) or the state of a game aren’t easy to represent in prose.
+
+Another option is to store objects, i.e., to save a list of dictionaries as-is rather than flattening (marshelling/serializing) it into rows and columns.
+Python's [[https://docs.python.org/3/library/pickle.html][pickle]] module does this in a Python-specific way, while the [[https://docs.python.org/3/library/json.html][json]] module saves SOME KINDS OF DATA as text formatted like JavaScript objects. As odd as it may seem, this has become a cross-language standard.
+
+The phrase “some kinds of data” is the most important part of the preceding paragraph. Since programs can define new classes, a persistence framework has to choose one of the following:
+
+1. Only handle built-in types, or even more strictly, only handle types that are common across many languages, so that data saved by Python can be read by JavaScript and vice versa.
+
+2. Provide a way for programs to convert from user-defined types to built-in types and then save those.
+
+   This option is less restrictive than the first but can lead to some information being lost. For example, if instances of a program’s /User/ class are saved as dictionaries, the program that reads data may wind up with dictionaries instead of users.
+
+3. Save class definitions as well as objects’ values so that when a program reads saved data it can reconstruct the classes and then create fully functional instances of them.
+
+   This choice is the most powerful, but it is also the hardest to implement, particularly across languages.
+
+   It is also the _RISKIEST_: if a program is running third-party code in order to restore objects, /it has to trust that code not to do anything malicious./
+
+This chapter starts by implementing the first option (built-in types only), then extends it to handle objects that the data structure refers to in several places (which JSON does not).
+
+To keep parsing and testing simple, our framework will store everything as text with one value per line; we will look at non-text options in Chapter 17, and at how to handle user-defined types in Appendix B.
+
+** Theory
+*** Built-in types
+:PROPERTIES:
+:ID:       bd1f3e9a-b403-4e59-ba43-f32f1673e0e4
+:END:
+
+The first thing we need to do is specify our data format.
+
+We will store each atomic value on a line of its own with a type name and a value separated by a colon:
+#+begin_src python
+bool:True
+int:123
+#+end_src
+
+Since we are storing things as text, we have to handle strings carefully: for example, we might need to save the string "str:something" and later be able to tell that it isn’t the string "something"
+(it is actually the string 'str:something').
+
+We do this by splitting strings on newline characters and saving the number of lines, followed by the actual data:
+#+begin_example
+# input
+this is
+two lines
+#+end_example
+
+#+begin_src python
+# output
+str:2
+this is
+two lines # even if we have 'str:something' here it would have a text that is of the part of the original string that spans two lines.
+#+end_src
+
+The function save handles three of Python’s built-in types to start with:
+
+#+begin_src python :noweb yes :tangle ./src/ch16/builtin.py
+def save(writer, thing):
+    if isinstance(thing, bool):
+        print(f'bool:{thing}', file=writer)
+
+    elif isinstance(thing, float):
+        print(f'float:{thing}', file=writer)
+
+    elif isinstance(thing, int):
+        print(f'int:{thing}', file=writer)
+
+    elif isinstance(thing, str):
+        values = thing.split('\n')
+        print(f'str:{len(values)}', file=writer)
+        for value in values:
+            print(value, file=writer)
+
+    <<save-list-ch16>>
+
+    <<save-dict-ch16>>
+
+    else:
+        raise ValueError(f'unknown type of thing {type(thing)}')
+
+#+end_src
+
+The function that loads data starts by reading a single line, stripping off the newline at the end (which is added automatically by the ~print~ statement in ~save~), and then splitting the line on colons. After checking that there are two fields, it uses the type name in the first field to decide how to handle the second:
+
+#+begin_src python :noweb yes :tangle ./src/ch16/builtin.py
+def load(reader):
+    line = reader.readline()[:-1] # ignore the 'newline' character
+    assert line, 'Nothing to read'
+    fields = line.split(':', maxplit=1) # split of the first ':' from left to right
+    assert len(fields) == 2, f'Badly formed line {line}'
+    key, value = fields
+
+    if key == 'bool':
+        names = {'True': True,
+                 'False': False,
+                 }
+        assert value in names, f'Unknown boolean {value}'
+        return names[value]
+
+    elif key == 'float':
+        return float(value) # value is a string
+
+    elif key == 'int':
+        return int(value)
+
+    elif key == 'str':
+        # Unlike list and dict, the 'str:length'
+        # is not something that to load we can call the 'load'
+        # function recursively
+        return '\n'.join([reader.readline()[:-1] # ignore the 'newline' character
+                          for _ in range(int(value))])
+
+    <<load-list-ch16>>
+
+    <<load-dict-ch16>>
+
+    else:
+        raise ValueError(f'unknown type of thing {line}')
+
+#+end_src
+
+#+name: Figure 16.1
+#+caption: Saving nested data structures
+[[file:images/Chapter_16:_Object_Persistence/2025-09-14_17-25-04_screenshot.png]]
+
+Saving a list is almost as easy: we save the number of items in the list, and then save each item with a recursive call to save.
+
+For example, the list [55, True, 2.71] is saved as shown in [[Figure 16.1]]. The code to do this is:
+
+#+name: save-list-ch16
+#+begin_src python
+elif isinstance(thing, list):
+    print(f'list:{len(thing)}', file=writer)
+    for item in thing:
+        save(writer, item)
+#+end_src
+
+while to load a list, we just read the specified number of items:
+
+#+name: load-list-ch16
+#+begin_src python
+elif key == 'list':
+    return [load(reader) for _ in range(int(value))]
+#+end_src
+
+- NOTE :: that ~save~ and ~load~ don’t need to know what kinds of values are in the list.
+  Each recursive call advances the input or output stream by precisely as many lines as it needs to.
+  As a result, this approach should handle empty lists and nested lists without any extra work.
+
+Our functions handle sets in exactly the same way as lists; the only difference is using the keyword ~set~ instead of the keyword ~list~ in the opening line. To save a dictionary, we save the number of entries and then save each key and value in turn:
+
+#+name: save-dict-ch16
+#+begin_src python
+elif isinstance(thing, dict):
+    print(f'dict:{len(thing)}', file=writer)
+    for key, value in thing.items():
+        save(writer, key)
+        save(writer, value)
+#+end_src
+
+#+name: load-dict-ch16
+#+begin_src python
+elif key == 'dict':
+    return {load(reader): load(reader) for _ in range(int(value))}
+#+end_src
+
+With this machinery in place, we can save our first data structure:
+#+begin_src python :tangle ./src/ch16/save_builtin.py
+import sys
+from builtin import save
+save(sys.stdout, [False, 3.14, "hello", {"left": 1, "right": [2, 3]}])
+#+end_src
+
+#+begin_src sh
+uv run ./src/ch16/save_builtin.py
+#+end_src
+
+#+RESULTS:
+#+begin_example
+list:4
+bool:False
+float:3.14
+str:1
+hello
+dict:2
+str:1
+left
+int:1
+str:1
+right
+list:2
+int:2
+int:3
+#+end_example
+
+We now need to write some unit tests.
+We will use two tricks when doing this:
+
+1. The =StringIO= class from Python’s [[https://docs.python.org/3/library/io.html][io]] module allows us to read from strings and write to them using the functions we normally use to read and write files.
+
+   - Nice :: Using this lets us run our tests without creating lots of little files as a side effect.
+   (Hmm, like we used pyfakefs for an in-memory file system)
+
+2. The ~dedent~ (Remove any common leading whitespace from every line in `text`) function from Python's [[https://docs.python.org/3/library/textwrap.html][textwrap]] module removes leading indentation from the body of a string.
+
+   As the example below shows, dedent allows us to indent a fixture the same way we indent our Python code, which makes the test easier to read.
+
+#+begin_src python :tangle ./src/ch16/test_builtin.py
+from io import StringIO
+from textwrap import dedent
+from builtin import save
+
+def test_save_list_flat():
+    fixture = [0, False]
+    expected = dedent("""\
+    list:2
+    int:0
+    bool:False
+    """)
+    output = StringIO()
+    save(output, fixture)
+    assert output.getvalue() == expected
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch16/test_builtin.py
+#+end_src
+
+#+RESULTS:
+: ============================================= test session starts =============================================
+: platform linux -- Python 3.12.11, pytest-8.4.2, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 1 item
+:
+: src/ch16/test_builtin.py .                                                                              [100%]
+:
+: ============================================== 1 passed in 0.00s ==============================================
+
+*** Converting to Classes
+
+The save and load functions we built in the previous section work, but as we were extending them we had to modify their internals every time we wanted to do something new.
+(True)
+
+- Open-Closed Principle ::
+  A design rule stating that software should be open for extension but closed for modification, i.e., it should be possible to extend functionality without having to rewrite existing code.
+
+*Open-Closed Principle* allows old code to use new code, BUT only if our design permits the kinds of extensions people are going to want to make. (/Even then/, it OFTEN leads to deep class hierarchies that can be hard for the next programmer to understand.)
+
+Since we can’t anticipate everything, it is normal to have to revise a design the first two or three times we try to extend it. The things we make learn how to do things better as we use them.
+
+In this case, we can follow the Open-Closed Principle by rewriting our functions as classes and by using yet another form of *dynamic dispatch* to handle each item so that we don’t have to modify a multi-way if statement each time we add a new capability.
+
+If we have an object =obj=, then ~hasattr(obj, "name")~ tells us whether that object has an attribute called "name". If it does, ~getattr(obj, "name")~ returns that attribute’s value; if that attribute happens to be a method, we can then call it like a function:
+
+#+begin_src python :eval yes :tangle ./src/ch16/attr.py
+class Example:
+    def __init__(self, label):
+        self.label = label
+
+    def get_size(self):
+        return len(self.label)
+
+ex = Example('thing')
+print('ex has missing', hasattr(ex, 'missing'))
+print("ex has label", hasattr(ex, "label"), "with value", getattr(ex, "label"))
+print("ex has get_size", hasattr(ex, "get_size"))
+method = getattr(ex, "get_size")
+print("result of calling method", method())
+#+end_src
+
+#+RESULTS:
+: ex has missing False
+: ex has label True with value thing
+: ex has get_size True
+: result of calling method 5
+
+Using this, the core of our saving class is:
+
+#+begin_src python :noweb yes :tangle ./src/ch16/objects.py
+class SaveObjects:
+    def __init__(self, writer):
+        self.write = writer
+
+    def save(self, thing):
+        typename = type(thing).__name__
+        method = f'save_{typename}'
+        assert hasattr(self, method), \
+            f'Unknown object type {typename}'
+        getattr(self, method)(thing)
+
+    <<def save_int>>
+
+    <<def save_str>>
+
+#+end_src
+
+We have called this class ~SaveObjects~ instead of just ~Save~ because we are going to create other variations on it. ~SaveObjects.save~ figures out which method to call to save a particular thing by constructing a name based on the thing’s type, checking whether that method exists, and then calling it.
+
+/As in the previous example of dynamic dispatch/, the methods that handle specific items MUST ALL HAVE the same signature so that they can be called interchangeably. For example, the methods that write integers and strings are:
+
+#+name: def save_int
+#+begin_src python
+def save_int(self, thing):
+    self._write('int', thing)
+#+end_src
+
+#+name: def save_str
+#+begin_src python
+def save_str(self, thing):
+    lines = thing.split('\n')
+    self._write('str', len(lines))
+    for line in lines:
+        print(line, file=self.writer)
+#+end_src
+
+~LoadObjects.load~ combines dynamic dispatch with the string handling of our original ~load~ function:
+
+#+begin_src python :noweb yes :tangle ./src/ch16/objects.py
+class LoadObjects:
+    def __init__(self, reader):
+        self.reader = reader
+
+    def load(self):
+        line = self.reader.readline()[:-1]
+        fields = line.split(":", maxsplit=1)
+        assert len(fields) == 2, f"Badly-formed line {line}"
+        key, value = fields
+
+        method = f"load_{key}"
+        assert hasattr(self, method), f"Unknown object type {key}"
+        return getattr(self, method)(value)
+
+    <<def load_float>>
+
+#+end_src
+
+The methods that load individual items are even simpler. For example, we load a floating-point number like this:
+
+#+name: def load_float
+#+begin_src python
+def load_float(self, value):
+    return float(value)
+#+end_src
+
+*** Aliasing
+:PROPERTIES:
+:ID:       2c0ce102-77a4-4319-8804-46d77c14a5f9
+:END:
+
+Consider the two lines of code below, which created the data structure shown in [[Figure 16.2]].
+
+#+begin_src python
+shared = ['content']
+fixture = [shared, shared]
+# => fixture = [['content'], ['content']]
+# We save 1. shared, then 2. fixture by calling SaveObjects.save on these variables
+#+end_src
+
+#+name: Figure 16.2
+#+caption: Saving aliased data without respecting aliases
+[[file:images/Chapter_16:_Object_Persistence/2025-09-14_18-48-04_screenshot.png]]
+
+If we save this structure and then reload it using what we have built so far, we will wind up with two copies of the list containing the string "content" instead of one. This won’t be a problem _if we only_ ever read the reloaded data, BUT if we modify the new copy of ~fixture[0]~, we won’t see that change reflected in ~fixture[1]~, where we would have seen the change in the original data structure:
+
+The problem is that the list shared is *aliased*, i.e., there are two or more references to it. To reconstruct the original data correctly, we need to:
+
+1. keep track of everything we have saved
+2. save a marker instead of the object itself when we try to save it a second time; and
+3. reverse this process when loading data
+
+We can keep track of the things we have saved using Python’s built-in ~id~ function, which returns a unique ID for every object in the program. For example, even if two lists contain exactly the same values, ~id~ will report different IDs for those lists because they’re stored in different locations in memory. We can use this to:
+
+1. store the IDs of all the objects we have already saved in a set, and then
+2. write a special entry with the keyword /alias/ and its unique ID when we see an object for the second time.
+
+Here's the start of ~SaveAlias~:
+
+#+begin_src python :noweb yes :tangle ./src/ch16/aliasing_wrong.py
+from objects import SaveObjects, LoadObjects
+
+class SaveAlias(SaveObjects):
+    def __init__(self, writer):
+        super().__init__(writer)
+        self.seen = set()
+
+    def save(self, thing):
+        thing_id = id(thing)
+        if thing_id in seen:
+            self._write('alias', thing_id, "")
+            return
+
+        self.seen.add(thing_id)
+        typename = type(thing).__name__
+        method = f'save_{typename}'
+        assert hasattr(self, method), f"Unknown object type {typename}"
+        getattr(self, method)(thing)
+
+    <<def save_list>>
+
+#+end_src
+
+Its constructor creates an empty set of IDs seen so far. If ~SaveAlias.save~ notices that the object it’s about to save has been saved before, it writes a line like this:
+
+#+begin_example
+alias:12345678:
+#+end_example
+
+where 12345678 is the object's ID.
+
+*Q.* Why is there a colon at the end of the line alias:12345678: when we create an alias marker ?
+*A.* This seems to be consistent with the new way we will save objects, for examle, /int:12321432:5/
+
+If the object hasn’t been seen before, SaveAlias saves the object’s type, its ID, and either its value or its length:
+
+#+name: def save_list
+#+begin_src python
+def save_list(self, thing):
+    self._write('list', id(thing), len(thing))
+    for item in thing:
+        self.save(item)
+#+end_src
+
+~SaveAlias._list~ is a little different from ~SaveObjects._list~ because it has to save each object’s identifier along with its type and its value or length.
+
+Our ~LoadAlias~ class needs a similar change compared to ~LoadObjects~. The first version is shown below; as we will see, it contains a subtle bug:
+
+#+begin_src python :noweb yes :tangle ./src/ch16/aliasing_wrong.py
+class LoadAlias(LoadObjects):
+    def __init__(self, reader):
+        super().__init__(reader)
+        self.seen = {} # dict (not a 'set' like in ReadAlias)
+
+    def load(self):
+        line = self.reader.readline()[:-1]
+        assert line, "Nothing to read"
+        fields = line.split(":", maxsplit=2)
+        assert len(fields) == 3, f"Badly-formed line {line}"
+        key, ident, value = fields
+
+        # the lines below contain a bug
+        # Q. What is the bug ???
+        if key == 'alias':
+            assert ident in self.seen
+            return self.seen[ident]
+
+        method = f'load_{key}'
+        assert hasattr(self, method), f"Unknown object type {key}"
+        result = getattr(self, method)(value)
+        self.seen[ident] = result
+        return result
+#+end_src
+
+The first test of our new code is:
+
+#+begin_src python :tangle ./src/ch16/test_aliasing_wrong.py
+from io import StringIO
+from aliasing_wrong import SaveAlias, LoadAlias
+
+def test_aliasing_no_aliasing():
+    fixture = ['a', {'b': True, 7: {'c', 'd'}}]
+    assert roundtrip(fixture) == fixture
+
+def roundtrip(fixture)    :
+    writer = StringIO()
+    SaveAlias(writer).save(fixture)
+    reader = StringIO(writer.getvalue())
+    return LoadAlias(reader).load()
+
+#+end_src
+
+There isn’t any aliasing in the test case, but that’s deliberate: we want to make sure we haven’t broken code that was working before we move on. Here’s a test that actually includes some aliasing:
+
+#+begin_src python :tangle ./src/ch16/test_aliasing_wrong.py
+def test_aliasing_shared_child():
+    shared = ['content']
+    fixture = [shared, shared]
+    result = roundtrip(fixture)
+    assert result == fixture
+    assert id(result[0]) == id(result[1])
+    result[0][0] = 'changed'
+    assert result[1][0] == 'changed'
+#+end_src
+
+It checks that the aliased sub-list is actually aliased after the data is restored, then checks that changes to the sub-list through one alias show up through the other. The second check ought to be redundant, but it’s still comforting.
+
+There’s one more case to check, and unfortunately it reveals a bug. The two lines:
+
+#+begin_src python
+fixture = []
+fixture.append(fixture)
+#+end_src
+
+creates the data structure shown in [[Figure 16.3]] , in which an object contains a reference to itself.
+
+Our code /ought to/ handle this case BUT DOESN’T: when we try to read in the saved data, ~LoadAlias.load~ sees the alias line but then says it can’t find the object being referred to.
+
+#+name: Figure 16.3
+#+caption: A data structure that contains a refrence to itself
+[[file:images/Chapter_16:_Object_Persistence/2025-09-21_13-56-25_screenshot.png]]
+
+The problem is these lines in LoadAlias.load marked as containing a bug, in combination with these lines inherited from LoadObjects:
+
+#+begin_src python
+def load_list(self, value):
+    return [self.load() for _ in range(int(value))]
+#+end_src
+
+Let's trace the execution for the saved data:
+
+#+begin_src python
+list:4484025600:1
+alias:4484025600:
+#+end_src
+
+1. The first line tells us that there’s a list whose ID is 4484025600 so we ~LoadObjects._list~ to load a list of one element.
+
+2. ~LoadObjects._list~ called ~LoadAlias.load~ recursively to load that one element.
+
+3. ~LoadAlias.load~ reads the second line of saved data, which tells it to re-use the data whose ID is 4484025600.
+
+   But ~LoadObjects._list~ hasn’t created that list yet -- it is still reading the elements -- so ~LoadAlias.load~ hasn’t added the list to seen.
+
+The solution is to reorder the operations, which UNFORTUNATELY means writing new versions of all the methods defined in ~LoadObjects~. The new implementation of ~_list~ is:
+
+#+begin_src python
+def load_list(self, ident, length):
+    result = []
+    self.seen[ident] = result
+    for _ in range(int(length)):
+        result.append(self.load())
+    return result
+#+end_src
+
+This method creates the list it's going to return, adds that list to the seen dictionary immediately, and THEN loads list items recursively.
+
+We have to pass it the ID of the list to use as key in ~seen~, and we have to use a loop rather than a list comprehension, but the changes o ~save_set~ and ~save_dict~ follow exactly the same pattern.
+
+* TODO Chapter 17: Binary Data
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/binary/
+:header-args:python: :session ch17 :results output :async yes :eval no
+:header-args:sh: :session ch17-sh :results output :async yes
 :END:

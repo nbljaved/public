@@ -6183,9 +6183,306 @@ This method creates the list it's going to return, adds that list to the seen di
 
 We have to pass it the ID of the list to use as key in ~seen~, and we have to use a loop rather than a list comprehension, but the changes o ~save_set~ and ~save_dict~ follow exactly the same pattern.
 
-* TODO Chapter 17: Binary Data
+* Chapter 17: Binary Data
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/binary/
 :header-args:python: :session ch17 :results output :async yes :eval no
 :header-args:sh: :session ch17-sh :results output :async yes
+:END:
+
+** Summary
+:PROPERTIES:
+:ID:       52726990-3b85-4d88-991d-5f478711019c
+:END:
+
+- Programs usually store integers using *two's complement* rather than sign and magnitude.
+- Characters are usually encoded as bytes using either ASCII, UTF-8, or UTF-32.
+- Programs can use bitwise operators to manipulate the bits representing data directly.
+
+- Low-level compiled languages usually store raw values, while high-level interpreted languages use boxed values.
+- Sets of values can be packed into contiguous byte arrays for efficient transmission and storage.
+
+Python and other high-level languages shield programmers from the low-level details of how computers actually store and manipulate data, but sooner or later someone has to worry about bits and bytes. This chapter explores how computers represent numbers and text and shows how to work with data at this level.
+
+#+caption: Concepts for binary data
+[[file:images/Chapter_17:_Binary_Data/2025-09-22_19-05-11_screenshot.png]]
+
+** Theory
+*** Integers
+
+Let’s start by looking at how integers are stored.
+
+The natural way to do this with ones and zeroes uses base 2, so 1001 in binary is 9 in base 10. We can handle negative numbers by reserving the top bit for the sign, so that 01001 is +9 and 11001 is -9.
+
+This representation has two drawbacks:
+
+1. The less important one is that it gives us two zeroes, one positive and one negative.
+
+2. The larger one is that the hardware needed to do arithmetic on this *sign and magnitude* representation is more complicated than the hardware needed for another scheme called *two’s complement*
+
+   Instead of mirroring positive values, *two’s complement* rolls over when going below zero like an odometer. For example, three-bit integers give us the values in [[Table 17.1]].
+
+#+name: Table 17.1
+#+caption: 3-bit integer values using 2's complement
+| *Base 10* | *Base 2* |
+|---------+--------|
+|       3 |    011 |
+|       2 |    010 |
+|       1 |    001 |
+|       0 |    000 |
+|      -1 |    111 |
+|      -2 |    110 |
+|      -3 |    101 |
+|      -4 |    100 |
+
+We can still tell whether a number is positive or negative by looking at the first bit: negative numbers have 1, positive numbers have 0.
+
+However, two’s complement is asymmetric: since 0 counts as a positive number, numbers go from -4 to 3, or -16 to 15, and so on. As a result, even if x is a valid number, -x may not be.
+
+We can write binary numbers directly in Python using the ~0b~ prefix:
+
+#+begin_src python :eval yes
+print(0b101101) # 1 + 0 + 4 + 8 + 0 + 32
+#+end_src
+
+#+RESULTS:
+: 45
+
+As noted in [[*Chapter 3: Finding duplicate files][Chapter 3: Finding duplicate files]], programmers usually use hexadecimal instead: the digits 0-9 have the usual meaning, and the letters A-F (or a-f) are used to represent the digits 11-15.
+
+We signal that we are using the hexadecial with a ~0x~ prefix so 0xF7 is (7 + 15x16) or 247 base 10.
+
+Each hexadecial digit correspond to four bits, so two hexadecimal digits are exactly one byte, which makes it easy to translate bits to digits and vice versa: for example, 0xF7 is 0b11110111.
+
+*** Bitwise Operations
+See your notes.
+
+*** Text
+https://third-bit.com/sdxpy/binary/#binary-text
+
+*** And now, Persistence
+:PROPERTIES:
+:ID:       841aaffe-bbaa-40ff-8b04-59389b09351f
+:END:
+
+[[*Chapter 16: Object Persistence][Chapter 16: Object Persistence]] showed how to store data as human-readable text.
+
+There are generally 3 reasons to store it in formats that people can't easily read:
+
+1. Size.
+   The string '10239472' is 8 bytes (1 byte = 8 bit) long, but the 32-bit integer it represents only needs 4 bytes in memory. This doesn't matter for small data sets, but it does for larger ones, and it definitely does when data has to move between disk and memory or between different computers.
+
+
+2. Speed.
+   Adding the integers 34 and 56 is a single machine operation.
+   Adding the values respresented by the strings '34' and '56' is dozens.
+   Most programs that read and write text files convert the values in those files into binary data using something like ~int~ or ~float~ functions, but if we are going to process the data many times, it makes sense to avoid paying the conversion cost over and over.
+
+3. Lack of anything better.
+   It's possible to represent images as ASCII art, but sound ? Or video ? It would be possible, but it would hardly be sensible
+
+Finally, no matter how values are eventually stored, someone, somewhere, has to convert the signals from a digital thermometer to numbers. Those signals almost certainly arrive as a stream of 1’s and 0’s, and the bitwise operations shown above are almost certainly used to do the conversion.
+
+
+The first step toward saving and loading binary data is to write it and read it correctly. If we open a file for reading using ~open("filename", "r")~ then Python assumes we want to read character strings from the file. It therefore:
+
+- asks the operating system for the default character encoding (which is almost always UTF-8)
+
+- uses this to convert bytes to characters; and
+
+- converts Windows end-of-line markers to the Unix standard if necessary.
+
+  For historical reasons, Windows uses both a carriage return "\r" and a newline "\n" to mark the end of a line, while Unix uses only the latter. Python converts from Windows to Unix on the way in and vice versa on the way out so that programs (usually) don’t have to worry about the difference.
+
+
+These translations are handy when we’re working with text, but they mess up binary data: we probably don’t want the pixels in our PNG image translated in these ways.
+
+As mentioned in [[*Chapter 3: Finding duplicate files][Chapter 3: Finding duplicate files]], if we open a file in binary mode using ~open(filename, "rb")~ with a lower-case ‘b’ after the ‘r’, Python gives us back the file’s contents as a bytes object instead of as character strings.
+
+In this case we will almost always get data using ~reader.read(N)~ to read ~N~ bytes at a time rather than ~for line in reader~ because there aren’t actually lines of text in the file.
+
+*Q.* But what values should we actually store ?
+
+#+name: Figure 17.1
+#+caption: Using boxed values to store metadata
+[[file:images/Chapter_17:_Binary_Data/2025-09-23_12-19-18_screenshot.png]]
+
+- C and Fortran manipulate “naked” values: programs use what the hardware provides directly.
+
+  Python and other dynamic languages, on the other hand, put each value in a data structure that keeps track of its type along with a bit of extra administrative information ([[Figure 17.1]]). Something stored this way is called a *boxed value*, and this extra information is /what allows the interpreter to do introspection at runtime/.
+
+- The same is true of collections.
+
+  For example, Fortran stores all the values in an array side by side in memory ([[Figure 17.2]]). Writing this to disk is easy: if the array starts at location /L/ in memory and has /N/ values, each of which is /B/ bytes long, we just copy the bytes from /L/ to /L + NB - 1/ to the file.
+
+  #+name: Figure 17.2
+  #+caption: Low-level and high-level array storage
+  [[file:images/Chapter_17:_Binary_Data/2025-09-23_12-21-55_screenshot.png]]
+
+  A Python list, on the other hand, stores references to values rather than the values themselves. To put the values in a file, we can either write them one at a time or pack them into a contiguous block and write that. Similarly, when reading from a file, we can either grab the values one by one or read a larger block and then unpack it in memory.
+
+
+- Packing data is a lot like formatting strings using Python’s ~str.format~ method. The *format string* specifies what types of data are being packed, how big they are (e.g., is this a 32-bit or 64-bit floating point number?), and how many values there are, which in turn exactly determines how much memory is required by the packed representation.
+
+  Unpacking reverses this process. After reading data into memory, we can unpack it according to a format.
+  The most important thing is that we can unpack data /any way we want/. We might pack an integer and then unpack it as four characters, since both are 32 bits long ([[Figure 17.3]]). Or we might save two characters, an integer, and two more characters, then unpack it as a 64-bit floating point number. The bits are just bits: it’s our responsibility to make sure we keep track of their meaning when they’re down there on disk.
+
+  #+name: Figure 17.3
+  #+caption: Packing and unpacking binary values
+  [[file:images/Chapter_17:_Binary_Data/2025-09-23_18-20-26_screenshot.png]]
+
+
+Python's [[https://docs.python.org/3/library/struct.html][struct]] modules packs and unpacks data for us.
+
+The function ~pack(format, val_1, val_2, …)~ takes a format string and a bunch of values as arguments and packs them into a ~bytes~ object. The inverse function, ~unpack(format, string)~, takes some bytes and a format and returns a tuple containing the unpacked values.
+
+Here’s an example:
+
+#+begin_src python :eval yes
+import struct
+
+fmt = 'ii' # two 32-bit integers
+x = 31
+y = 65
+
+binary = struct.pack(fmt, x, y)
+print(f'binary representation: {repr(binary)}')
+
+normal = struct.unpack(fmt, binary)
+print(f'back to normal: {normal}')
+#+end_src
+
+#+RESULTS:
+: binary representation: b'\x1f\x00\x00\x00A\x00\x00\x00'
+: back to normal: (31, 65)
+
+*Q.* What is ~\x1f~ and why is it in our data ?
+
+*A.* If Python finds a byte in a string that doesn't correspond to a printable character, it prints a 2-digit *escape sequence* in hexadecimal.
+
+   Python is therefore telling us that our string contains the eight bytes:
+   ['\x1f', '\x00', '\x00', '\x00', 'A', '\x00', '\x00', '\x00']
+
+   1F in hex is 31.
+   'A' is our 65, because the ASCII code for an upper-case letter A is the decimal value 65.
+   All the other bytes are zeroes ('\x00') because each of our integers is 32-bits long and the significant digits only fill one byte's worth of each
+
+#+name: Table 17.4
+#+caption: ~struct~ package formats
+| *Format* | *Meaning*                                               |
+|--------+-------------------------------------------------------|
+| 'c'    | Single character (i.e. string of length 1)            |
+| 'B'    | Unsigned 8-bit integer with all 8 bits used for value |
+| 'h'    | 16-bit integer                                        |
+| 'i'    | 32-bit integer                                        |
+| 'd'    | 64-bit float                                          |
+
+The ~struct~ module offers a lot of different formats, some of which are shown in [[Table 17.4]].
+
+Some of the formats, like "c" for a single character, are self-explanatory.
+The "B" format packs or unpacks the LEAST significant 8 bits of an integer; the "h" format takes the least significant 16 bits and does likewise.
+
+They are needed because binary data formats often store /only as much data as they need to/, so we need a way to get 8- and 16-bit values out of files. (Many audio formats, for example, only store 16 bits per sample.)
+
+Any format can be preceded by a count, so the format '3i' means 'three integers':
+
+#+begin_src python :eval yes
+from struct import pack
+
+print(pack("3i", 1, 2, 3))
+print(pack("5s", bytes("hello", "utf-8")))
+print(pack("5s", bytes("a longer string", "utf-8")))
+#+end_src
+
+#+RESULTS:
+: b'\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00'
+: b'hello'
+: b'a lon'
+
+We get the wrong answer in the last call because we only told Python to pack five characters.
+
+*Q.* How can we tell it to pack all the data that’s there regardless of length?
+
+The short answer is that we can’t: we must specify how much we want packed. But that doesn’t mean we can’t handle variable-length strings; it just means that we have to construct the format on the fly using an expression like this:
+
+#+begin_src python
+format = f'{len(str)}s'
+#+end_src
+
+If str contains the string "example", the expression above will assign "7s" to format, which just happens to be exactly the right format to use to pack it /provided all the characters can be represented in a single byte each/.
+
+*Q.* Saving the format when we are writing solves half of the problem, but how do we know how much data to get when we’re reading?
+
+For example, suppose we have the two strings “hello” and “Python”. We can pack them like this:
+
+#+begin_src python
+pack('5s6s', 'hello', 'Python')
+#+end_src
+
+*Q.* but how do we know how to unpack 5 characters then 6?
+
+*A.* The trick is to save the size along with the data.
+
+If we always use exactly the same number of bytes to store the size, we can read it back safely, then use it to figure out how big our string is:
+
+#+begin_src python :eval yes
+from struct import pack
+
+def pack_string(as_string):
+    as_bytes = bytes(as_string, 'utf-8')
+    header = pack('i', len(as_bytes))
+    format = f'{len(as_bytes)}s'
+    body = pack(format, as_bytes)
+    return header + body
+
+print(repr(pack_string('hello!')))
+#+end_src
+
+#+RESULTS:
+: b'\x06\x00\x00\x00hello!'
+
+The unpacking function is analogous.
+
+We break the *memory buffer* into a header that’s exactly four bytes long (i.e., the right size for an integer) and a body made up of whatever’s left.
+
+We then unpack the header, whose format we know, to determine how many characters are in the string. Once we’ve got that, we use the trick shown earlier to construct the right format on the fly and then unpack the string and return it.
+
+#+begin_src python :eval yes
+from struct import unpack
+
+def unpack_string(buffer):
+    header, body = buffer[:4], buffer[4:]
+    length = unpack('i', header)[0]
+    format = f'{length}s'
+    result = unpack(format, body)[0]
+    return str(result, 'utf-8')
+
+print(unpack_string(pack_string('hello!')))
+#+end_src
+
+#+RESULTS:
+: hello!
+
+In practice, programmers use the struct module’s ~calcsize~ function to figure out how large (in bytes) the data represented by a format is:
+
+#+begin_src python :eval yes
+from struct import calcsize
+
+for format in ['4s', '3i4s5d']:
+    print(f'format {format} needs {calcsize(format)} bytes')
+#+end_src
+
+#+RESULTS:
+: format 4s needs 4 bytes
+: format 3i4s5d needs 56 bytes
+
+Binary data is to programming what chemistry is to biology: you don’t want to spend any more time thinking at its level than you have to, but there’s no substitute when you do have to.
+
+- NOTE :: Please remember that libraries already exist to handle almost every binary format ever created and to read data from almost every instrument on the market. You shouldn’t worry about 1’s and 0’s unless you really have to.
+
+* TODO Chapter 18
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/db/
+:header-args:python: :session ch18 :results output :async yes :eval no
+:header-args:sh: :session ch18-sh :results output :async yes
 :END:

@@ -6480,9 +6480,629 @@ Binary data is to programming what chemistry is to biology: you don’t want to 
 
 - NOTE :: Please remember that libraries already exist to handle almost every binary format ever created and to read data from almost every instrument on the market. You shouldn’t worry about 1’s and 0’s unless you really have to.
 
-* TODO Chapter 18
+* Chapter 18: A Database
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/db/
 :header-args:python: :session ch18 :results output :async yes :eval no
 :header-args:sh: :session ch18-sh :results output :async yes
+:END:
+
+** Summary
+
+- Database stores records so that they can be accessed by key.
+- /Log-structured database/ appends new records to database and invalidates older versions of records.
+
+- Classes are data structures that can be saved like any other data.
+
+- The filesystem saves data in fixed-size pages.
+- We can improve the efficiency of a database by saving records in blocks.
+
+Persisting objects ([[*Chapter 16: Object Persistence][Chapter 16: Object Persistence]]) lets us save and restore program state, but we often want to be able to look things up quickly without reloading all of our data.
+
+We would also like applications written in different languages to be able to get at our data, which might be easier if we choose a different storage format.
+
+This chapter therefore builds a very simple *log-structured database*.
+
+The phrase “log-structured” means that records a log of operations, i.e., every new record is appended to the end of the database. Programmers have invented many other ways to store large amounts of data, but this is one of the easiest to understand.
+
+[[Figure 18.4]] summarizes the key ideas introduced in this chapter. Most real databases use different data structures than ours, but must deal with the same challenges: making data access fast without ever losing data or allowing it to become inconsistent.
+
+#+name: Figure 18.4
+#+caption: Concept-map for a log-structured database.
+[[file:images/Chapter_18/2025-10-28_17-55-57_screenshot.png]]
+
+** Theory
+:PROPERTIES:
+:ID:       3c963ff1-a60a-4dae-a164-fd791e5621ff
+:END:
+
+*** Starting Point
+:PROPERTIES:
+:ID:       a66af087-07fb-49b9-ae85-22fe5cb62c3f
+:END:
+
+Our starting point is a simple _key-value store_ that lets us save records and look them up later. To use it, we have to provide a function that takes a record and returns its key. We store that function in the ~Database~ object for later use:
+
+#+begin_src python :tangle ./src/ch18/interface_original.py
+class Database:
+    def __init__(self, key_func):
+        """Initialize with function to get key."""
+        self._key_func = key_func
+
+    def add(self, record):
+        """Store the given record."""
+        raise NotImplementedError("add")
+
+    def get(self, key):
+        """Return record associated with key or None."""
+        raise NotImplementedError("get")
+
+#+end_src
+
+If we want a dictionary that only stores things in memory, we can derive a class from Database that uses a dictionary with the values returned by the user’s key function for lookup ([[Figure 18.1]]):
+
+#+begin_src python :tangle ./src/ch18/just_dict_original.py
+from interface_original import Database
+
+class JustDict(Database):
+    def __init__(self, key_func):
+        super().__init__(key_func)
+        self._data = {}
+
+    def add(self, record):
+        key = self._key_func(record)
+        self._data[key] = record
+
+    def get(self, key):
+        # Here we specify the 'key' ourselves unlike in 'add'
+        return self._data.get(key, None)
+
+#+end_src
+
+#+name: Figure 18.1
+#+caption: Storing a database as a single dictionary in memory
+[[file:images/Chapter_18/2025-10-28_18-00-32_screenshot.png]]
+
+This simple class is enough to let us start writing some tests. Let’s create a class to store experimental records:
+
+#+begin_src python :tangle ./src/ch18/record_original.py
+class BasicRec:
+    # These are class attributes
+    MAX_NAME_LEN = 6     # length of name in chars
+    TIMESTAMP_LEN = 8    # length of timestamp in chars
+    MAX_READING = 10     # maximum reading value
+    MAX_READING_LEN = 2  # length of reading in chars
+    MAX_READINGS_NUM = 2 # maximum number of readings
+
+    @staticmethod
+    def key(record):
+        assert isinstance(record, BasicRec)
+        return record._name
+
+    def __init__(self, name, timestamp, readings):
+        assert 0 < len(name) <= self.MAX_NAME_LEN
+        assert 0 <= len(readings) <= self.MAX_READINGS_NUM
+        assert all((0 <= r <= self.MAX_READING) for r in readings)
+        self._name = name
+        self._timestamp = timestamp
+        self._readings = readings
+
+#+end_src
+
+and use the ~pytest.fixture~ decorator ([[*Chapter 9: Protocols][Chapter 9: Protocols]]) to create a database and two records:
+
+#+begin_src python :tangle ./src/ch18/test_db_original.py
+import pytest
+
+from record_original import BasicRec as BasicExperiment
+from just_dict_original import JustDict
+
+@pytest.fixture
+def db():
+    return JustDict(BasicExperiment.key)
+
+@pytest.fixture
+def ex01():
+    return BasicExperiment("ex01", 12345, [1, 2])
+
+@pytest.fixture
+def ex02():
+    return BasicExperiment("ex02", 67890, [3, 4])
+
+#+end_src
+
+Our first few tests are then
+
+#+begin_src python :tangle ./src/ch18/test_db_original.py
+def test_construct(db):
+    assert db
+
+def test_get_nothing_from_empty_db(db):
+    assert db.get("something") is None
+
+def test_add_then_get(db, ex01):
+    db.add(ex01)
+    assert db.get("ex01") == ex01
+
+def test_add_two_then_get_both(db, ex01, ex02):
+    db.add(ex01)
+    db.add(ex02)
+    assert db.get("ex01") == ex01
+    assert db.get("ex02") == ex02
+
+def test_add_then_overwrite(db, ex01):
+    db.add(ex01)
+    ex01._timestamp = 67890
+    db.add(ex01)
+    assert db.get("ex01") == ex01
+
+#+end_src
+
+#+begin_src sh
+uvx pytest ./src/ch18/test_db_original.py
+#+end_src
+
+#+RESULTS:
+: ========================================= test session starts ==========================================
+: platform linux -- Python 3.12.8, pytest-8.4.2, pluggy-1.6.0
+: rootdir: /home/nabeel/Documents/public/books/Software Design by Example
+: collected 5 items
+:
+: src/ch18/test_db_original.py .....                                                               [100%]
+:
+: ========================================== 5 passed in 0.01s ===========================================
+
+- Our next step is to save the user’s records in the database _WITHOUT tying the database to a PARTICULAR TYPE of record_.
+
+  The cleanest way to solve this problem is to require records to know how to convert themselves into something storable. Rather than passing a second function (the function is used to get the key name from the record) to the database’s constructor, we will refactor the database so that we pass in the object that represents the record class:
+
+#+begin_src python :tangle ./src/ch18/interface.py
+class Database:
+    def __init__(self, record_cls):
+        """Initialize with data manipulation functions."""
+        self._record_cls = record_cls
+
+    def add(self, record):
+        """Store the given record."""
+        raise NotImplementedError("add")
+
+    def get(self, key):
+        """Return record associated with key or None."""
+        raise NotImplementedError("get")
+#+end_src
+
+We can now refactor our database to use a static method of the record class provided to its constructor when it needs a key:
+
+#+begin_src python :tangle ./src/ch18/just_dict_refactored.py
+from interface import Database
+
+class JustDictRefactored(Database):
+    def __init__(self, record_cls):
+        super().__init__(record_cls)
+        self._data = {}
+
+    def add(self, record):
+        key = self._record_cls.key(record)
+        self._data[key] = record
+
+    def get(self, key):
+        return self._data.get(key, None)
+#+end_src
+
+*** Saving Records
+The next step in building a usable database is to have it store records rather than just /refer/ to the user’s objects.
+
+Since we DON’T WANT the database tied to any _particular kind of record_, records must know how to pack and unpack themselves.
+
+- null byte ::
+  A byte with the value zero.
+  Null bytes are used to mark the ends of strings in C and C++, and are sometimes used to fill unused space in fixed-size binary records.
+
+We could have used the techniques of [[*Chapter 17: Binary Data][Chapter 17: Binary Data]], but to make our test and sample output a little more readable, we will pack numbers as strings with a null byte ~\0~ between each string:
+
+#+name: def pack
+#+begin_src python
+@staticmethod
+def pack(record):
+    assert isinstance(record, Experiment)
+    readings = "\0".join(str(r) for r in record._readings)
+    result = f"{record._name}\0{record._timestamp}\0{readings}"
+    if len(result) < Experiment.RECORD_LEN:
+        result += "\0" * (Experiment.RECORD_LEN - len(result))
+    return result
+#+end_src
+
+The corresponding method to unpack a stored record is:
+
+#+name: def unpack
+#+begin_src python
+@staticmethod
+def unpack(raw):
+    assert isinstance(raw, str)
+    parts = raw.split("\0")
+    name = parts[0]
+    timestamp = int(parts[1])
+    readings = [int(r) for r in parts[2:] if len(r)]
+    return Experiment(name, timestamp, readings)
+#+end_src
+
+These records look like the example below (which uses ~.~ to show null bytes):
+#+begin_src python :tangle ./src/ch18/show_packed_records.py
+from record import Experiment
+
+ex = Experiment("abcdef", 12345, [6, 7])
+print(Experiment.pack(ex).replace('\0', '.'))
+#+end_src
+
+#+begin_src sh
+uv run ./src/ch18/show_packed_records.py
+#+end_src
+
+#+RESULTS:
+: abcdef.12345.6.7.....
+
+Notice that our packing and unpacking methods are static, i.e. they are part of the class but don't require an object to work. More importantly, they don't handle strings that contain null bytes. This limitation wasn't part of our original design, but is instead an accident of implementation.
+
+To finish off, we write methods to pack and unpack multiple records at once by joining and splitting single record data:
+
+#+name: def pack_multi and unpack_multi
+#+begin_src python
+@staticmethod
+def pack_multi(records):
+    return ''.join([Experiment.pack(r) for r in records])
+
+@staticmethod
+def unpack_multi(raw):
+    size = Experiment.size()
+    split = [raw[i:i + size] for i in range(0, len(raw), size)]
+    return [Experiment.unpack(s) for s in split]
+#+end_src
+
+and give our record class a static method that calculates the size of a single record:
+
+#+begin_src python :tangle ./src/ch18/record.py :noweb yes
+from record_original import BasicRec
+
+class Experiment(BasicRec):
+    RECORD_LEN = BasicRec.MAX_NAME_LEN + 1 \
+        + BasicRec.TIMESTAMP_LEN + 1 \
+        + (BasicRec.MAX_READING_LEN * BasicRec.MAX_READINGS_NUM) \
+        + (BasicRec.MAX_READINGS_NUM - 1)
+
+    @staticmethod
+    def size():
+        return Experiment.RECORD_LEN
+
+    <<def pack>>
+
+    <<def unpack>>
+
+    <<def pack_multi and unpack_multi>>
+
+#+end_src
+
+#+caption: Tradeoffs
+#+begin_quote
+We are assuming that every record is the same size.
+
+If we want to save records with variable-length fields such as strings, we can either set a maximum size and always save that much data or make our implementation more complicated (and probably slower) by saving each record's size and then scanning records in the same way that we scanned the bytes making up Unicode characters in [[*Chapter 17: Binary Data][Chapter 17: Binary Data]].
+
+The first choice spends space (i.e. memory and disk) to save time; the second spends time to save space.
+
+As [[Jon Louis Bentley. Writing Efficient Programs. Prentice-Hall PTR, 1982.]] pointed out over 40 years ago, a lot of performance optimizations in programming come down to trading space for time or vice versa.
+#+end_quote
+
+*** A File-Backed Database
+:PROPERTIES:
+:ID:       f72d9449-3a3b-4b34-9668-936d805a403a
+:END:
+
+We now have what we need to extend our dictionary-based implementation to write records to a file and load them as needed:
+
+#+begin_src python :tangle ./src/ch18/file_backed.py :noweb yes
+from pathlib import Path
+from interface import Database
+
+class FileBacked(Database):
+    def __init__(self, record_cls, filename):
+        super().__init__(record_cls)
+        self._filename = Path(filename)
+        if not self._filename.exists():
+            self._filename.touch()
+        self._load()
+
+    def add(self, record):
+        key = self._record_cls.key(record)
+        self._data[key] = record
+        self._save()
+
+    def get(self, key):
+        return self._data.get(key, None)
+
+    <<def _save and _load>>
+
+#+end_src
+
+- This implementation stores everything in a single file, whose name must be provided to the database’s constructor ([[Figure 18.2]]).
+
+  * If that file doesn’t exist when the database object is created, we use ~Path.touch~ to create an empty file; either way, we then load the entire database into memory.
+
+  * When we ~add~ a record, we save it in the dictionary and call a helper method ~_save~ to write the entire database back to the file.
+
+  * When we ~get~ a record, we simply get it from the in-memory dictionary.
+
+#+name: Figure 18.2
+#+caption: Saving the entire database in a single file
+[[file:images/Chapter_18/2025-10-29_14-20-04_screenshot.png]]
+
+The two helper methods we need to make this work are:
+
+#+name: def _save and _load
+#+begin_src python
+def _save(self):
+    packed = self._record_cls.pack_multi(self._data.values())
+    with open(self._filename, "w") as writer:
+        writer.write(packed)
+
+def _load(self):
+    assert self._filename.exists()
+    with open(self._filename, "r") as reader:
+        raw = reader.read()
+    records = self._record_cls.unpack_multi(raw)
+    self._data = {self._record_cls.key(r): r for r in records}
+#+end_src
+
+It isn’t very efficient -- we are loading the entire database the first time we want a single record, and saving the entire database every time we add a record -- but we are getting closer to something we might actually use.
+
+*** Playing with Blocks
+:PROPERTIES:
+:ID:       7d7d8a8e-99c3-41a6-8cb0-a1f31742fb4e
+:END:
+
+*Q.* How can we make our file-backed implementation more efficient?
+
+One option would be to save each record in a file of its own, in the same way that we saved each version of a file in [[*Chapter 10: A File Archiver][Chapter 10: A File Archiver]]. However, this strategy won’t give us as much of a performance boost as we’d like. The reason is that computers do file I/O in /pages/ that are typically 2 or 4 kilobytes in size. Even when we want to read a single byte, the operating system always reads a full page and then gives us just the byte we asked for.
+
+- page ::
+    A fixed-size block of storage space. Most modern filesystems manage disks using 4K pages, and many other applications such as databases use the same page size to maximize efficiency.
+
+A more efficient strategy is to group records together in /blocks of memory/, each of which is the same size as a page, and to create an index in memory to tell us which records are in which blocks. When we add a record, we only write ITS block to disk; similarly, when we need a record whose block isn’t already in memory, we only read THAT block.
+
+- block (of memory) ::
+    A region of memory of a fixed, constant size. Data is often divided into blocks to optimize input and output at the hardware level; software is then used to convert between blocks and streams.
+
+*Q.* At this point we need to address an issue we should have tackled earlier. How do we handle updates to records? For example, suppose we already have a record with the ID 12345; what do we do when we get another record with the same ID? If we are storing the entire database in a single dictionary, the dictionary takes care of that for us, but if we are storing things in blocks, we will have multiple dictionaries.
+
+*A.* This is where the /“log-structured”/ part of our design comes in.
+Whenever we add a record to the database, we append it to the current block or start another block if the current one is full ([[Figure 18.3]]).
+We give each record a sequence number as we add it, and our overall index keeps track of the mapping from record IDs to sequence IDs. Since we know how many records there are in a block, we can quickly calculate which block contains the record with a particular sequence ID.
+
+#+name: Figure 18.3
+#+caption: Mapping records to blocks
+[[file:images/Chapter_18/2025-10-29_14-35-31_screenshot.png]]
+
+Let’s create a new in-memory database using one dictionary for each block. The constructor creates ~self._next~ to store the sequence ID of the next record, ~self._index~ to map record IDs to sequence IDs, and a list ~self._blocks~ to store blocks:
+
+#+begin_src python :tangle ./src/ch18/blocked.py :noweb yes
+class Blocked(Database):
+    RECORDS_PER_BLOCK = 2
+
+    @staticmethod
+    def size():
+        return Blocked.RECORDS_PER_BLOCK
+
+    def __init__(self, record_cls):
+        super().__init__(record_cls)
+        self._next = 0
+        self._index = {}
+        self._blocks = []
+
+    def num_blocks(self):
+        return len(self._blocks)
+
+    def num_records(self):
+        return len(self._index)
+
+    <<def add-ch18>>
+
+    <<def get-ch18>>
+
+    <<def helper-ch18>>
+#+end_src
+
+To add a record, we:
+
+1. get the sequence ID for the record;
+2. store the key-to-sequence mapping in the index;
+3. find or create the right block; and
+4. add the record.
+
+#+name: def add-ch18
+#+begin_src python
+def add(self, record):
+    key = self._record_cls.key(record)
+    seq_id = self._next_seq_id()
+    self._index[key] = seq_id
+    block_id = self._get_block_id(seq_id)
+    block = self._get_block(block_id)
+    block[seq_id] = record
+#+end_src
+
+To get a record given a record ID, we first ask if we even have that record. If we do, we:
+
+1. find its current sequence ID;
+2. find the corresponding block; and
+3. get the record.
+
+#+name: def get-ch18
+#+begin_src python
+def get(self, key):
+    if key not in self._index:
+        return None
+    seq_id = self._index[key]
+    block_id = self._get_block_id(seq_id)
+    block = self._get_block(block_id)
+    return block[seq_id]
+#+end_src
+
+The three helper methods that ~add~ and ~get~ rely on are:
+
+#+name: def helper-ch18
+#+begin_src python
+def _next_seq_id(self):
+    seq_id = self._next
+    self._next += 1
+    return seq_id
+
+def _get_block_id(self, seq_id):
+    return seq_id // Blocked.RECORDS_PER_BLOCK
+
+def _get_block(self, block_id):
+    while block_id >= len(self._blocks):
+        self._blocks.append({})
+    return self._blocks[block_id]
+#+end_src
+
+*** Persistent Blocks
+
+We now have working prototypes of the two parts of our design:
+1. saving data to file and
+2. dividing records into blocks.
+
+In order to combine them, we will inherit from our block-based implementation and extend the ~add~ and ~get~ methods to save and load data:
+
+#+begin_src python :tangle ./src/ch18/blocked_file.py :noweb yes
+from pathlib import Path
+from blocked import Blocked
+
+class BlockedFile(Blocked):
+    def __init__(self, record_cls, db_dir):
+        super().__init__(record_cls)
+        self._db_dir = Path(db_dir)
+        self._build_index()
+
+    def add(self, record):
+        super().add(record)
+        self._save(record)
+
+    def get(self, key):
+        if key not in self._index:
+            return None
+        self._load(key)
+        return super().get(key)
+
+    <<def _save>>
+
+    <<def _load/_load_block>>
+
+    <<def _build_index>>
+#+end_src
+
+We will explain the call to ~self._build_index()~ in a few paragraphs.
+
+#+caption: One at a Time
+#+begin_quote
+Exploring ideas one at a time and then combining them is a common tactic among experienced designers [[Marian Petre and André van der Hoek. Software Design Decoded: 66 Ways Experts Think. MIT Press, 2016]]. Creating classes like the all-in-one-file database that we don’t put into production may feel like a waste of time, but it usually saves us effort in the long run by reducing cognitive load.
+#+end_quote
+
+Saving a block is mostly a matter of bookkeeping at this point. Given the record, we figure out which block it belongs in, save it, pack the block, and write the result to a file:
+
+#+name: def _save
+#+begin_src python
+def _save(self, record):
+    key = self._record_cls.key(record)
+    seq_id = self._index[key]
+    block_id = self._get_block_id(seq_id)
+
+    block = self._get_block(block_id)
+    packed = self._record_cls.pack_multi(block.values())
+
+    filename = self._get_filename(block_id)
+    with open(filename, "w") as writer:
+        writer.write(''.join(packed))
+#+end_src
+
+Loading involves almost the same steps, but our implementation splits it into two pieces:
+
+#+name: def _load/_load_block
+#+begin_src python
+def _load(self, key):
+    seq_id = self._index[key]
+    block_id = self._get_block_id(seq_id)
+    filename = self._get_filename(block_id)
+    self._load_block(block_id, filename)
+
+def _load_block(self, block_id, filename):
+    with open(filename, "r") as reader:
+        raw = reader.read()
+
+    records = self._record_cls.unpack_multi(raw)
+    base = self.size() * block_id
+    block = self._get_block(block_id)
+    for i, r in enumerate(records):
+        block[base + i] = r
+#+end_src
+
+We put the code to load a single block in a method of its own because we need to initialize the in-memory index when restarting the database:
+
+#+name: def _build_index
+#+begin_src python
+def _build_index(self):
+    seq_id = 0
+    for (block_id, filename) in enumerate(
+            sorted(self._db_dir.iterdir())
+    ):
+        self._load_block(block_id, filename)
+        for record in self._get_block(block_id).values():
+            key = self._record_cls.key(record)
+            self._index[key] = seq_id
+            seq_id += 1
+#+end_src
+
+An obvious extension to our design is to save the index in a separate file each time we add or modify a record. However, we should profile this change before putting it into production to see if it actually improves performance ([[*Chapter 15: Performance Profiling][Chapter 15: Performance Profiling]]), since many small writes might cost more than one large multi-file read. We would also have to do something to avoid creating a race condition; as in [[*Chapter 10: A File Archiver][Chapter 10: A File Archiver]], operating on two files (one for the index and one for the block) could lead to harmful inconsistencies.
+
+*** Cleaning Up
+
+The final step in our implementation is to clean up blocks that are no longer needed because we have a more recent version of every record they contain. Reclaiming unused space this way is another form of /garbage collection/. Python and most other modern languages do it automatically to recycle unused memory, but it’s our responsibility to do it for the files our database creates.
+
+The steps in cleanup are:
+
+1. Calculate a new sequence ID for each record.
+2. Figure out which blocks contain records that we need to retain.
+3. Generate new block IDs for those blocks while also creating a set of IDs of blocks we can delete because all of their records are out of date.
+4. Delete and rename blocks.
+5. Generate a new in-memory index.
+
+The implementation of these steps is mostly a matter of bookkeeping:
+
+#+begin_src python :tangle ./src/ch18/cleanup.py
+def _cleanup(self):
+    new_seq = {
+        o: i for i, o in enumerate(self._index.values())
+    }
+    keep = {self._get_block_id(o) for o in new_seq}
+
+    renaming = {o: i for i, o in enumerate(list(sorted(keep)))}
+    garbage_ids = {
+        i for i in range(len(self._blocks))
+        if i not in renaming
+    }
+
+    self._delete_blocks(garbage_ids)
+    self._rename_blocks(renaming)
+
+    new_index = {
+        k: new_seq[self._index[k]] for k in self._index
+    }
+    self._index = new_index
+    self._next = len(self._index)
+#+end_src
+
+- NOTE :: This method doesn’t /compact/ storage, i.e., it doesn’t move records around to get rid of stale blocks within records. Production-quality databases do this periodically in order to use the disk more efficiently;
+
+* TODO Chapter 19: A Build Manager
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/build/
+:header-args:python: :session ch19 :results output :async yes :eval no
+:header-args:sh: :session ch19-sh :results output :async yes
 :END:

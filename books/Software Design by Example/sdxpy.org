@@ -7106,3 +7106,17 @@ def _cleanup(self):
 :header-args:python: :session ch19 :results output :async yes :eval no
 :header-args:sh: :session ch19-sh :results output :async yes
 :END:
+
+** Summary
+
+- Build managers track dependencies between files and update files that are stale.
+- Every build rule has a target, some dependencies, and a recipe for updating the target.
+- Build rules form a directed graph which must not contain cycles.
+- Pattern rules describe the dependencies and recipes for sets of similar files.
+- Pattern rules can use automatic variables to specify targets and dependencies in recipes.
+
+** Theory
+*** Concepts
+*** Initial Design
+*** Topological Sorting
+*** A Better Design

@@ -93,7 +93,6 @@ from pprint import pprint
 
 <<my-class-methods>>
 <<my-class-constructors>>
-<<generic-make-method>>
 
 MyShape = {
     # methods
@@ -226,7 +225,7 @@ def circle_area(self):
   which is very similar to:
   ~obj.density(weight)~ (here the 'self' object passed is implicit)
 
-  - Also, not the definition of the 'shape_density' function.
+  - Also, NOTE the definition of the 'shape_density' function.
     Its arguments are the same as that of a normal class' methods.
 
 *** call_method implementation
@@ -276,7 +275,7 @@ for ex in examples:
 *** Class methods and static methods
 
 *Q.* Explain the differences between class methods and static methods
-*A.* [[https://stackoverflow.com/questions/136097/what-is-the-difference-between-staticmethod-and-classmethod-in-python][StackOverflow answer]]
+*A.* [[https://stackoverflow.com/questions/136097/what-is-the-difference-between-staticmethod-and-classmethod-in-python][StackOverflow answer]] (very nice, read it !!)
 
 *Q.* Implement both using dictionaries.
 
@@ -7100,7 +7099,7 @@ def _cleanup(self):
 
 - NOTE :: This method doesn’t /compact/ storage, i.e., it doesn’t move records around to get rid of stale blocks within records. Production-quality databases do this periodically in order to use the disk more efficiently;
 
-* TODO Chapter 19: A Build Manager
+* Chapter 19: A Build Manager
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/build/
 :header-args:python: :session ch19 :results output :async yes :eval no
@@ -7108,6 +7107,9 @@ def _cleanup(self):
 :END:
 
 ** Summary
+:PROPERTIES:
+:ID:       c8dd52e2-5461-49cf-81f4-de2348d7eb5e
+:END:
 
 - Build managers track dependencies between files and update files that are stale.
 - Every build rule has a target, some dependencies, and a recipe for updating the target.
@@ -7115,8 +7117,353 @@ def _cleanup(self):
 - Pattern rules describe the dependencies and recipes for sets of similar files.
 - Pattern rules can use automatic variables to specify targets and dependencies in recipes.
 
+We use a build manager to keep track of which files depend on which and what actions to take to create or update files. This chapter shows how a simple build manager works; along the way, it introduces some algorithms for working with graphs.
+
+[[Figure 19.4]] summarizes the ideas introduced in this chapter. Note that the small bubble labelled “graph algorithm” could be expanded to a shelf full of books.
+
+#+name: Figure 19.4
+#+caption: Concept Map
+[[file:images/Chapter_19:_A_Build_Manager/2025-11-20_17-50-37_screenshot.png]]
+
 ** Theory
 *** Concepts
+:PROPERTIES:
+:ID:       88cf32c7-e52b-4ccf-b05e-c398d4e5ab56
+:END:
+
+The first build manager, Make, was written by a student intern at Bell Labs in the 1970s. Many others now exist (such as SCons and Snakemake), but they all perform the same basic operations.
+
+- If a /target/ is stale with respect to any of its /dependencies/, the build manager runs a /recipe/ to refresh it.
+
+The build manager runs recipes in an order that respects dependencies, and it only runs each recipe once (if at all). In order for this to be possible, targets and dependencies MUST form a _directed acyclic graph_ (doesn't mean a tree, 1->2, 1->3, 2->4, 3->4), i.e., there cannot be a cycle of links leading from a node back to itself.
+
+The build manager constructs a *topological ordering* of that graph, i.e., arranges nodes so that each one comes after everything it depends on and then builds what it needs to in that order ([[Figure 19.1]]).
+
+- Topological ordering ::
+
+  - Any ordering of the nodes in a graph that respects the direction of its edges, i.e., if there is an edge from node A to node B, A comes before B in the ordering. There may be many topological orderings of a particular graph.
+
+  - [[file:~/Documents/leetcode/org/programming.org::*Topological Sort][Topological Sort]]
+    It orders the vertices on a line such that all directed edges go from left to right.
+
+#+caption: A bit of History
+#+begin_quote
+Make was created to manage programs in compiled languages like C and Java, which have to be translated into lower-level forms before they can run.
+
+There are usually two stages to the translation: compiling each source file into some intermediate form, and then _linking_ the compiled modules to each other and to libraries to create a runnable program.
+
+If a source file hasn’t changed, we don’t need to recompile it before linking. Skipping unnecessary work in this way can save a lot of time when we are working with programs that contain thousands or tens of thousands of files.
+#+end_quote
+
+#+name: Figure 19.1
+#+caption: Dependencies and topological order
+[[file:images/Chapter_19:_A_Build_Manager/2025-11-20_17-52-41_screenshot.png]]
+
 *** Initial Design
+:PROPERTIES:
+:ID:       17bf2553-51f3-435a-aa26-64061f054595
+:END:
+
+Our first step is to decide how we are going to represent build rules. We could invent a special-purpose syntax to fit the problem, but as we said in [[*Chapter 5: Parsing Text][Chapter 5: Parsing Text]], the world has enough data formats. Instead, we will represent our recipes as JSON. For example, this file describes two targets A and B and states that the former depends on the latter:
+
+#+begin_src json
+{
+  "A": {"depends": ["B"], "rule": "build A"},
+  "B": {"depends": [], "rule": "build B"}
+}
+#+end_src
+
+looks like:
+
+#+begin_example
+A: B
+  build A
+
+B:
+  build B
+#+end_example
+
+As in [[*Chapter 10: A File Archiver][Chapter 10: A File Archiver]], we will use successive refinement to create our first build manager.
+
+Our ~BuildBase~ class takes a configuration file as a constructor argument, loads it, creates a topological ordering, and then refreshes each target in order. For now, “refreshing” means “prints the update rule”; we will come back and make this more sophisticated later.
+
+
+#+begin_src python :tangle ./src/ch19/build_simply.py :noweb yes
+class BuildBase:
+    def build(self, config_file):
+        config = self._configure(config_file)
+        ordered = self._topo_sort(config)
+        for node in ordered:
+            self._refresh(config, node)
+
+    def _refresh(self, config, node):
+        assert node in config, f"Unknown node {node}"
+        print(config[node]["rule"])
+
+     <<def _configure>>
+
+     <<def _check>>
+
+     <<def _topo_sort>>
+#+end_src
+
+#+name: def _configure
+#+begin_src python
+def _configure(self, config_file):
+    with open(config_file, "r") as reader:
+        config = json.load(reader)
+        known = set(config.keys())
+        return {
+            name: self._check(name, details, known)
+            for name, details in config.items()
+        }
+
+#+end_src
+
+To check a rule, we make sure the dictionary that represents it has the required keys and that we have a rule for every dependency it mentions. We also transform the rule’s structure a bit to simplify later processing:
+
+#+name: def _check
+#+begin_src python
+def _check(self, name, details, known):
+    assert "rule" in details, f"Missing rule for {name}"
+    assert "depends" in details, f"Missing depends for {name}"
+    depends = set(details["depends"])
+    assert depends.issubset(known), \
+        f"Unknown depends for {name}"
+    return {"rule": details["rule"], "depends": depends}
+#+end_src
+
+#+name: Figure 19.2
+#+caption: Representing dependency graph
+[[file:images/Chapter_19:_A_Build_Manager/2025-11-20_19-57-18_screenshot.png]]
+
+#+caption: It's Not Extra Work
+#+begin_quote
+We have to implement the consistency checks for our build rules because JSON is a generic format that knows nothing about dependencies, rules, and required keys.
+
+There is a format called [[https://json-schema.org/][JSON Schema]] for specifying these things and a [[https://python-jsonschema.readthedocs.io/][Python module: jsonschema]] that implements its checks, but using it here would trade seven lines of code for 10 minutes of explanation.
+
+We will explore its use in the exercises, but the most important point is that whether we write code by hand or use a library with a bit of configuration, someone has to write these checks.
+#+end_quote
+
 *** Topological Sorting
+:PROPERTIES:
+:ID:       327f7512-21a2-43c5-b73a-82c62edaedc8
+:END:
+
+The next step is to figure out a safe order in which to build things. [[Figure 19.3]] shows how our algorithm (Noice) works:
+
+1. We find all the nodes in the dependency graph that don’t have any outstanding dependencies.
+
+2. We append those to the result and then remove them from the dependencies of all the other nodes in the graph.
+
+3. If anything is still in the graph, we go back to the first step.
+
+4. If at any point the graph isn’t empty but nothing is available, we have found a circular dependency, so we report the problem and fail.
+
+#+name: Figure 19.3
+#+caption: Topological sort
+[[file:images/Chapter_19:_A_Build_Manager/2025-11-21_18-05-03_screenshot.png]]
+
+The code that implements this algorithm is:
+
+#+name: def _topo_sort
+#+begin_src python
+def _topo_sort(self, config):
+    graph = {n: config[n]["depends"] for n in config}
+    result = []
+    while graph:
+        available = {n for n in graph if not graph[n]}
+        assert available, f"Circular graph {graph.keys()}"
+        result.extend(available)
+        graph = {
+            n: graph[n] - available
+            for n in graph
+            if n not in available
+        }
+    return result
+#+end_src
+
 *** A Better Design
+
+Our implementation works, but we can do better:
+
+1. The configuration might not come directly from a JSON file -- for example, it might be embedded in a larger file or generated by another program -- so we should modify the constructor to take a configuration as input.
+
+2. Printing actions to the screen isn’t very useful, so we should collect them and return an ordered list of the commands for the build manager.
+
+3. ~assert~ isn’t a friendly way to handle user errors; we should raise ~ValueError~ (or a custom exception of our own) to indicate a problem.
+
+4. Our topological sort ISN’T _STABLE_, i.e., there’s no way to predict the order in which two “equal” nodes will be added to the ordering. We will explore the reason for this in the exercises, but for now, we should sort node names when appending to the result list so that our tests can know what to check for.
+
+5. We might want to add other keys to rules, so we should put that check in a separate method that we can override.
+
+The top level of our better build manager looks like this:
+
+#+begin_src python :tangle ./src/ch19/build_better.py :noweb yes
+class BuildBetter:
+    def build(self, config):
+        config = self._configure(config)
+        ordered = self._topo_sort(config)
+        actions = []
+        for node in ordered:
+            self._refresh(config, node, actions)
+        return actions
+
+    def _refresh(self, config, node, actions):
+        assert node in config, f"Unknown node {node}"
+        actions.append(config[node]["rule"])
+
+    def _must(self, condition, message):
+        if not condition:
+            raise ValueError(message)
+
+
+    <<def _configure, def _check, def _check_keys>>
+
+    <<def _topo_sort(self, config)>>
+#+end_src
+
+#+name: def _configure, def _check, def _check_keys
+#+begin_src python
+def _configure(self, config):
+    known = set(config.keys())
+    return {n: self._check(n, d, known)
+            for n, d in config.items()}
+
+def _check(self, name, details, known):
+    self._check_keys(name, details)
+    depends = set(details["depends"])
+    self._must(
+        depends.issubset(known), f"Unknown depends for {name}"
+    )
+    result = details.copy()
+    result["depends"] = depends
+    return result
+
+def _check_keys(self, name, details):
+    self._must("rule" in details, f"Missing rule for {name}")
+    self._must(
+        "depends" in details, f"Missing depends for {name}"
+    )
+#+end_src
+
+and the updated topological sorting method is:
+
+#+name: def _topo_sort(self, config)
+#+begin_src python
+def _topo_sort(self, config):
+    graph = {n: config[n]["depends"] for n in config}
+    result = []
+    while graph:
+        available = {n for n in graph if not graph[n]}
+        self._must(
+            available,
+            f"Circular graph {list(graph.keys())}",
+        )
+        result.extend(sorted(available))
+        graph = {
+            n: graph[n] - available
+            for n in graph
+            if n not in available
+        }
+    return result
+#+end_src
+
+
+We can now test that the code detects circularities in the dependency graph:
+
+#+begin_src python
+def test_circular():
+    action_A = "build A"
+    action_B = "build B"
+    config = {
+        "A": {"depends": ["B"], "rule": action_A},
+        "B": {"depends": ["A"], "rule": action_B},
+    }
+    try:
+        Builder().build(config)
+        assert False, "should have had exception"
+    except ValueError:
+        pass
+#+end_src
+
+and that it builds what it is supposed to:
+
+#+begin_src python
+def test_no_dep():
+    action_A = "build A"
+    action_B = "build B"
+    config = {
+        "A": {"depends": [], "rule": action_A},
+        "B": {"depends": [], "rule": action_B},
+    }
+    assert Builder().build(config) == [action_A, action_B]
+#+end_src
+
+_We can also extend it._
+
+For example, suppose we only want to update targets that are older than their dependencies (which is, after all, the whole point of a build manager). If the targets are actual files we can check their timestamps, but for testing purposes we would like to specify pretended times in the configuration:
+
+#+begin_src python
+def test_diamond_dep():
+    action_A = "build A"
+    action_B = "build B"
+    action_C = "build C"
+    action_D = "build D"
+
+    #   B
+    #  / \
+    # D   A
+    #  \ /
+    #   C
+    config = {
+        "A": {"depends": ["B", "C"], "rule": action_A, "time": 0},
+        "B": {"depends": ["D"], "rule": action_B, "time": 0},
+        "C": {"depends": ["D"], "rule": action_C, "time": 1},
+        "D": {"depends": [], "rule": action_D, "time": 1},
+    }
+    assert Builder().build(config) == [action_B, action_A]
+#+end_src
+
+Starting from the class we have written so far, we need to override three methods:
+
+#+begin_src python
+class BuildTime(BuildBetter):
+    def _check_keys(self, name, details):
+        super()._check_keys(name, details)
+        self._must("time" in details, f"No time for {name}")
+
+    def _refresh(self, config, node, actions):
+        assert node in config, f"Unknown node {node}"
+        if self._needs_update(config, node):
+            actions.append(config[node]["rule"])
+
+    def _needs_update(self, config, node):
+        return any(
+            # any 'node' that is older than its dependency
+            # will need to be updated.
+            config[node]["time"] < config[d]["time"]
+            for d in config[node]["depends"]
+        )
+#+end_src
+
+#+caption: How we actually did it
+#+begin_quote
+Our final design uses the *Template Method* pattern:
+
+a method in a parent class /defines the control flow/, while child classes implement those operations.
+
+We didn’t know in advance exactly how to divide our code into methods; instead, as we were creating a class that loaded and used timestamps, we reorganized the parent class to create the affordances we needed.
+
+SOFTWARE DESIGN ALMOST ALWAYS WORKS THIS WAY: the first two or three times we try to extend something, we discover changes that would make those tasks easier.
+
+We should do less of this as time goes by: if we are still doing large-scale refactoring the tenth time we use something, we should rethink our entire design.
+#+end_quote
+
+* TODO Chapter 20: A Package Manager
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/pack/
+:header-args:python: :session ch12 :results output :async yes :eval no
+:header-args:sh: :session ch20-sh :results output :async yes
+:END:

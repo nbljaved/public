@@ -36,3 +36,20 @@ class BuildBetter:
         self._must(
             "depends" in details, f"Missing depends for {name}"
         )
+
+    def _topo_sort(self, config):
+        graph = {n: config[n]["depends"] for n in config}
+        result = []
+        while graph:
+            available = {n for n in graph if not graph[n]}
+            self._must(
+                available,
+                f"Circular graph {list(graph.keys())}",
+            )
+            result.extend(sorted(available))
+            graph = {
+                n: graph[n] - available
+                for n in graph
+                if n not in available
+            }
+        return result

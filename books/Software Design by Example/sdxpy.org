@@ -8637,7 +8637,7 @@ class MockHandler(
     pass
 #+end_src
 
-* TODO Chapter 23: A File Viewer
+* Chapter 23: A File Viewer
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/viewer/
 :header-args:python: :session ch23 :results output :async yes :eval no
@@ -8668,12 +8668,579 @@ Before they need version control tools or interpreters, programmers need a way t
 
 ** Theory
 *** Curses
+
+Our starting point is the [[https://docs.python.org/3/library/curses.html][curses]] module, which handles interaction with text terminals on several different operating systems in a uniform way. A very simple curses-based program looks like this:
+
+#+begin_src python :tangle ./src/ch23/first_curses.py
+import curses
+
+def main(stdscr):
+    while True:
+        key = stdscr.getkey()
+
+if __name__ == "__main__":
+    curses.wrapper(main)
+#+end_src
+
+~curses.wrapper~ takes a function with a single parameter as input, does some setup, and then calls that function with an object that acts as an interface to the screen. (It is called =stdscr=, for “standard screen”, by analogy with standard input =stdin= and standard output =stdout=.) Our function ~main~ is just an infinite loop that consumes keystrokes but does nothing with them. When we run the program, it clears the screen and waits for the user to interrupt it by typing Ctrl-C.
+
+We’d like to see what the user is typing, but since the program has taken over the screen, ~print~ statements won’t be of use. Running this program inside a single-stepping debugger is challenging for the same reason, so for the moment we will cheat and create a /log file/ for the program to write to:
+
+#+begin_src python :tangle ./src/ch23/util.py
+LOG = None
+
+def open_log(filename):
+    global LOG
+    LOG = open(filename, "w")
+
+def log(*args):
+    print(*args, file=LOG)
+#+end_src
+
+With this in hand, we can rewrite our program to take the name of the log file as its sole command-line argument and print messages to that file to show the keys that are being pressed. We can also modify the program so that when the user presses q, the program exits cleanly:
+
+#+begin_src python :tangle ./src/ch23/logging_curses.py
+import util
+import curses
+
+def main(stdscr):
+    while True:
+        key = stdscr.getkey()
+        util.log(repr(key)) # NOTE use of 'repr'
+        if key.lower() == "q":
+            return
+
+if __name__ == "__main__":
+    util.open_log(sys.argv[1])
+    curses.wrapper(main)
+#+end_src
+
+- NOTE :: that we print the representation of the characters using repr so that (for example) a newline character shows up in the file as '\n' rather than as a blank line.
+
+We are now ready to actually show some text. Given a list of strings, the revised main function below will repeatedly:
+
+1. clear the screen,
+2. display each line of text in the correct location,
+3. wait for a keystroke, and
+4. exit if the key is a q.
+
+#+begin_src python :tangle ./src/ch23/show_lines.py
+def main(stdscr, lines):
+    while True:
+        stdscr.erase() # erase the screen
+        for (y, line) in enumerate(lines):
+            stdscr.addstr(y, 0, line)
+        key = stdscr.getkey()
+        if key.lower() == "q":
+            return
+#+end_src
+
+Two things about this function need to be kept in mind. First, as explained in [[*Chapter 14: Page Layout][Chapter 14: Page Layout]], screens put (0, 0) in the upper left rather than the lower left, and increasing values of Y move down rather than up. To make things even more confusing, curses uses (row, column) coordinates, so we have to remember to write (y, x) instead of (x, y).
+
+The other oddity in this function is that it erases the entire screen each time the user presses a key. Doing this is unnecessary in most cases—if the user’s action doesn’t modify the text being shown, there’s no need to redraw it—but keeping track of which actions do and don’t require redraw would require extra code (and extra debugging). For now, we’ll do the simple, inefficient thing.
+
+Here’s how we run our revised main function:
+
+#+begin_src python :tangle ./src/ch23/show_lines.py
+if __name__ == "__main__":
+    num_lines, logfile = int(sys.argv[1]), sys.argv[2]
+    lines = make_lines(num_lines)
+    open_log(logfile)
+    curses.wrapper(lambda stdscr: main(stdscr, lines))
+#+end_src
+
+From top to bottom, we make a list of strings to display, open the log file, and then use ~lambda~ to make an anonymous function that takes a single screen object as input (which ~curses.wrapper~ requires) and immediately calls ~main~ with the two arguments that /it/ requires.
+
+A real text viewer would display the contents of a file, but for development we will just make up a regular pattern of text:
+
+#+begin_src python :tangle ./src/ch23/show_lines.py
+from string import ascii_lowercase
+
+def make_lines(num_lines):
+    result = []
+    for i in range(num_lines):
+        ch = ascii_lowercase[i % len(ascii_lowercase)]
+        result.append(ch + "".join(str(j % 10) for j in range(i)))
+    return result
+#+end_src
+
+If we ask for five lines, the pattern is:
+
+#+begin_example
+a
+b0
+c01
+d012
+e0123
+#+end_example
+
+These lines are a very (very) simple example of _synthetic data_, i.e., data that is made up for testing purposes. If the viewer doesn’t work for this text it probably won’t work on actual files, and the patterns in the synthetic data will help us spot mistakes in the display.
+
 *** Windowing
+:PROPERTIES:
+:ID:       73cfd89d-667c-4ab7-bc77-58a48cf7aa58
+:END:
+Our file viewer works, but only for small examples.
+
+If we ask it to display 100 lines, or anything else that is larger than our screen, it falls over with the message ~_curses.error: addwstr()~ returned ERR because it is trying to draw outside screen. The solution is to create a ~Window~ class that knows how big the screen is and only displays lines (or parts of lines) that fit inside it:
+
+#+begin_src python :tangle ./src/ch23/use_window.py
+class Window:
+    def __init__(self, screen):
+        self._screen = screen
+
+    def draw(self, lines):
+        self._screen.erase()
+        for (y, line) in enumerate(lines):
+            if 0 <= y < curses.LINES: # limit rows shows
+                self._screen.addstr(y, 0, line[:curses.COLS]) # limit columns shown
+#+end_src
+
+Our ~main~ function is then:
+
+#+begin_src python :tangle ./src/ch23/use_window.py
+def main(stdscr, lines):
+    window = Window(stdscr)
+    window.draw(lines)
+    while True:
+        key = stdscr.getkey()
+        if key.lower() == "q":
+            return
+#+end_src
+
+Notice that ~main~ creates the window object. We can’t create it earlier and pass it into main as we do with lines because the constructor for Window needs the screen object, which doesn’t exist until curses.wrapper calls main. This is an example of *delayed construction* and is going to constrain the rest of our design ([[Figure 23.1]]).
+
+#+name: Figure 23.1
+#+caption: Order of operations in delayed construction
+[[file:images/Chapter_23:_A_File_Viewer/2025-11-30_18-55-57_screenshot.png]]
+
+Nothing says we have to make our window exactly the same size as the terminal that is displaying it.
+
+In fact, testing will be a lot simpler if we can create windows of arbitrary size (so long as they aren’t /larger/ than the terminal). This version of ~Window~ takes an extra parameter /size/ which is either /None/ (meaning “use the full terminal”) or a (rows, columns) pair specifying the size we want:
+
+#+begin_src python :tangle ./src/ch23/size_window.py
+class Window:
+    def __init__(self, screen, size):
+        self._screen = screen
+        if size is None:
+            self._nrow = curses.LINES
+            self._ncol = curses.COLS
+        else:
+            self._nrow = min(size[ROW], curses.LINES)
+            self._ncol = min(size[COL], curses.COLS)
+
+    def draw(self, lines):
+        self._screen.erase()
+        for (y, line) in enumerate(lines):
+            if 0 <= y < self._nrow:
+                self._screen.addstr(y, 0, line[:self._ncol])
+#+end_src
+
+We’re going to have a lot of two-dimensional (row, column) coordinates in this program, so let’s define a pair of constants ROW and COL to be more readable than 0 and 1 or R and C. (We should really create an *enumeration*, but a pair of constants is good enough for now.)
+
+- enumeration :: A set of distinct named values defined in a program.
+
+#+begin_src python :tangle ./src/ch23/util.py
+ROW = 0
+COL = 1
+#+end_src
+
+#+begin_src python :tangle ./src/ch23/cursor_const.py
+class Window:
+    def draw(self, lines):
+        self._screen.erase()
+        for (y, line) in enumerate(lines):
+            if 0 <= y < self._size[ROW]:
+                self._screen.addstr(y, 0, line[:self._size[COL]])
+#+end_src
+
 *** Moving
+Our program no longer crashes when given large input to display, but we can’t see any of the text outside the window. To fix that, we need to teach the application to scroll. let’s create another class to keep track of the position of a cursor:
+
+#+begin_src python :tangle ./src/ch23/move_cursor.py
+class Cursor:
+    def __init__(self):
+        self._pos = [0, 0]
+
+    def pos(self):
+        return tuple(self._pos)
+
+    def up(self): self._pos[ROW] -= 1
+
+    def down(self): self._pos[ROW] += 1
+
+    def left(self): self._pos[COL] -= 1
+
+    def right(self): self._pos[COL] += 1
+#+end_src
+
+The cursor keeps track of its current (row, column) position in a list, but ~Cursor.pos~ returns the location as a separate tuple SO that other code can’t modify it.
+
+In general, nothing outside an object should be able to change the data structures that object uses to keep track of its state; otherwise, it’s very easy for the internal state to become inconsistent in difficult-to-debug ways.
+
+Now that we have a way to keep track of where the cursor is, we can tell ~curses~ to draw the cursor in the right location each time it renders the screen:
+
+#+begin_src python :tangle ./src/ch23/move_cursor.py
+def main(stdscr, size, lines):
+    window = Window(stdscr, size)
+    cursor = Cursor()
+    while True:
+        window.draw(lines)
+        stdscr.move(*cursor.pos())
+        key = stdscr.getkey()
+        if key == "KEY_UP": cursor.up()
+        elif key == "KEY_DOWN": cursor.down()
+        elif key == "KEY_LEFT": cursor.left()
+        elif key == "KEY_RIGHT": cursor.right()
+        elif key.lower() == "q":
+            return
+#+end_src
+
+As this code shows, the screen’s ~getkey~ method returns the names of the arrow keys. And since ~stdscr.move~ takes two arguments but ~cursor.pos~ returns a two-element tuple, we spread the latter with ~*~ to satisfy the former.
+
+When we run this program and start pressing the arrow keys, the cursor does indeed move. In fact, we can move it to the right of the text, or below the bottom line of the text if there are fewer lines of text than rows in our window.
+What’s worse, if we move the cursor off the left or top edges of the screen our program crashes with the message ~_curses.error: wmove()~ returned ERR. And we still can’t see all the lines in a long “file”: the text doesn’t scroll down when we go to the bottom.
+
+We need to constrain the cursor’s movement so that it stays inside the text (not just the window), while simultaneously moving the text up or down when appropriate.
+
+BEFORE TACKLING THOSE PROBLEMS, we will reorganize the code to give ourselves a better starting point.
+
 *** Refactoring
+
+Our first change is to write a class to represent the application as a whole; our program will then create one instance of this class, which will own the window and cursor.
+
+The trick to making this work is to take advantage of one of the protocols introduced in [[*Chapter 9: Protocols][Chapter 9: Protocols]]: if an object has a method named ~__call__~, that method will be invoked when the object is “called” as if it were a function:
+
+#+begin_src python
+class Pretend:
+    def __init__(self, increment):
+        self._increment = increment
+
+    def __call__(self, value):
+        return value + self._increment
+
+p = Pretend(3)
+result = p(10)
+print(result)
+# => 13
+#+end_src
+
+Since the ~MainApp~ class below defines ~__call__~, ~curses.wrapper~ believes we have given it the single-parameter function it needs:
+
+#+begin_src python :tangle ./src/ch23/main_app.py :noweb yes
+class MainApp:
+    def __init__(self, size, lines):
+        self._size = size
+        self._lines = lines
+
+    def __call__(self, screen):
+        self._setup(screen)
+        self._run()
+
+    def _setup(self, screen):
+        self._screen = screen
+        self._window = Window(self._screen, self._size)
+        self._cursor = Cursor()
+
+    <<def _run>>
+#+end_src
+
+The ~__call__~ method calls ~_setup~ to create and store the objects the application needs, then ~_run~ to handle interaction. The latter is:
+
+#+name: def _run
+#+begin_src python
+def _run(self):
+    while True:
+        self._window.draw(self._lines)
+        self._screen.move(*self._cursor.pos())
+        key = self._screen.getkey()
+        if key == "KEY_UP": self._cursor.up()
+        elif key == "KEY_DOWN": self._cursor.down()
+        elif key == "KEY_LEFT": self._cursor.left()
+        elif key == "KEY_RIGHT": self._cursor.right()
+        elif key.lower() == "q":
+            return
+#+end_src
+
+Finally, we pull the startup code into a function ~start~ so that we can use it in future versions of this code:
+
+#+begin_src python :tangle ./src/ch23/util.py
+def start():
+    num_lines, logfile = int(sys.argv[1]), sys.argv[2]
+    size = None
+    if len(sys.argv) > 3:
+        size = (int(sys.argv[3]), int(sys.argv[4]))
+    lines = make_lines(num_lines)
+    open_log(logfile)
+    return size, lines
+#+end_src
+
+and then launch our application like this:
+
+#+begin_src python :tangle ./src/ch23/main_app.py
+if __name__ == "__main__":
+    size, lines = start()
+    app = MainApp(size, lines)
+    curses.wrapper(app)
+#+end_src
+
+Next, we refactor ~_run~ to handle keystrokes using dynamic dispatch instead of a long chain of ~if/elif~ statement:
+
+#+begin_src python :tangle ./src/ch23/dispatch_keys.py
+TRANSLATE = {
+    "\x18": "CONTROL_X"
+}
+
+def _interact(self):
+    key = self._screen.getkey()
+    key = self.TRANSLATE.get(key, key)
+    name = f"_do_{key}"
+    if hasattr(self, name): # 'hasattr' gets all kinds of attributes (including methods)
+        getattr(self, name)()
+
+def _do_CONTROL_X(self):
+    self._running = False
+
+def _do_KEY_UP(self):
+    self._cursor.up()
+#+end_src
+
+A little experimentation showed that while the ~curses~ module uses names like "KEY_DOWN" for arrow keys, it returns actual control codes for key combinations like Ctrl-X. The /TRANSLATE/ dictionary turns these into human-readable names that we can glue together with ~_do_~ to make a method name; we got the hexadecimal value "\x18" by logging keystrokes to a file and then looking at its contents. We could probably have found this value in some documentation somewhere if we had looked hard enough, but a ten-second experiment seemed simpler.
+
+With ~_interact~ in place, we can rewrite ~_run~ to be just five lines long:
+
+#+begin_src python :tangle ./src/ch23/dispatch_keys.py
+class DispatchApp(MainApp):
+    def __init__(self, size, lines):
+        super().__init__(size, lines)
+        self._running = True
+
+    def _run(self):
+        while self._running:
+            self._window.draw(self._lines)
+            self._screen.move(*self._cursor.pos())
+            self._interact()
+#+end_src
+
+It now relies on a member variable called /_running/ to keep the loop going. We could have had each key handler method return True or False to signal whether to keep going or not, but we found out the hard way that it’s very easy to forget to do this, since almost every handler method’s result is going to be the same.
+
+#+caption: Inheritance
+#+begin_quote
+~DispatchApp~ inherits from our first ~MainApp~ so that we can recycle the initialization code we wrote for the latter. To make this happen, ~DispatchApp.__init__~ upcalls to ~MainApp.__init__~ using ~super().__init__~.
+
+We probably WOULDN’T create multiple classes in a real program, but doing this simplifies exposition when teaching. In order to make this work cleanly, we did have to move some code around as later examples showed us that we should have divided things up differently in earlier examples.
+
+THIS IS NORMAL. Nobody has perfect foresight; if we haven’t built a particular kind of application several times, we can’t anticipate all of the affordances we might need, so going back and refactoring old code to make new code easier to write is perfectly natural.
+
+IF we need to refactor every time we want to add something new, though, _we should probably rethink our design entirely_ !!
+#+end_quote
+
+We now have classes to represent the application, the window, and the cursor, but we are still storing the text to display as a naked list of lines. Let’s wrap it up in a class:
+
+#+begin_src python :tangle ./src/ch23/buffer_class.py
+class Buffer:
+    def __init__(self, lines):
+        self._lines = lines[:]
+
+    def lines(self):
+        return self._lines
+#+end_src
+
+This /text buffer/ class doesn’t do much yet, but will later keep track of the viewable region. Again, we make a copy of lines rather than using the list the caller gives us so that other code can’t change the buffer’s internals. The corresponding change to the application class is:
+
+#+begin_src python :tangle ./src/ch23/buffer_class.py
+class BufferApp(DispatchApp):
+    def __init__(self, size, lines):
+        super().__init__(size, lines)
+
+    def _setup(self, screen):
+        self._screen = screen
+        # Factory methods !
+        self._make_window()
+        self._make_buffer()
+        self._make_cursor()
+
+    def _make_window(self):
+        self._window = Window(self._screen, self._size)
+
+    def _make_buffer(self):
+        self._buffer = Buffer(self._lines)
+
+    def _make_cursor(self):
+        self._cursor = Cursor()
+#+end_src
+
+#+caption: *Factory Methods*
+#+begin_quote
+We want to re-use as much of ~BufferApp~ as possible in upcoming versions of our file viewer.
+
+If setup calls the constructors of specific classes to create the window, buffer, and cursor objects, we will have to rewrite the entire method EACH TIME we change the classes we use for those things.
+
+Putting constructor calls in factory methods makes the code longer BUT allows us to override them one by one. We didn’t do this when we were first writing these examples; instead, as described in the previous callout, we went back and refactored earlier classes to make later ones easier.
+#+end_quote
+
 *** Clipping
+
+We are now ready to keep the cursor inside both the text and the screen.
+
+The ~ClipCursor~ class below takes the buffer as a constructor argument so that it can ask how many rows there are and how big each one is, but its /up/, /down/, /left/, and /right/ methods have exactly the same signatures as the corresponding methods in the original ~Cursor~ class.
+
+As a result, while we have to change the code that creates a cursor, we won’t have to make any changes to the code that uses the cursor:
+
+#+begin_src python :tangle ./src/ch23/clip_cursor.py
+class ClipCursor(Cursor):
+    def __init__(self, buffer):
+        super().__init__()
+        self._buffer = buffer
+
+    def up(self):
+        self._pos[ROW] = max(self._pos[ROW]-1, 0)
+
+    def down(self):
+        self._pos[ROW] = min(self._pos[ROW]+1, self._buffer.nrow()-1)
+
+    def left(self):
+        self._pos[COL] = max(self._pos[COL]-1, 0)
+
+    def right(self):
+        self._pos[COL] = min(
+            self._pos[COL]+1,
+            self._buffer.ncol(self._pos[ROW])-1
+        )
+#+end_src
+
+The logic in the movement methods in ~ClipCursor~ is relatively straightforward. If the user wants to go up, don’t let the cursor go above line 0. If the user wants to go down, on the other hand, don’t let the cursor go below the last line, and so on.
+
+These methods rely on the buffer being able to report the number of rows it has and the number of columns in a particular row, so we define a new ~ClipBuffer~ class that provides those, and then override the ~_make_buffer~ and ~_make_cursor~ (factory) methods in the application class to construct the appropriate objects without changing the kind of window we are creating:
+
+#+begin_src python :tangle ./src/ch23/clip_cursor.py
+class ClipBuffer(Buffer):
+    def nrow(self):
+        return len(self._lines)
+
+    def ncol(self, row):
+        return len(self._lines[row])
+
+class ClipApp(BufferApp):
+    def _make_buffer(self):
+        self._buffer = ClipBuffer(self._lines)
+
+    def _make_cursor(self):
+        self._cursor = ClipCursor(self._buffer)
+#+end_src
+
+When we run this program, we are no longer able to move the cursor outside the window or outside the displayed text -- unless, that is, we go to the end of a long line and then move up to a shorter one.
+
+The problem is that up and down only change the cursor’s idea of the row it is on; they don’t check that the column position is still inside the text. The fix is simple:
+
+#+begin_src python :tangle ./src/ch23/clip_fixed.py
+class ClipCursorFixed(ClipCursor):
+    def up(self):
+        super().up()
+        self._fix()
+
+    def down(self):
+        super().down()
+        self._fix()
+
+    def _fix(self):
+        self._pos[COL] = min(
+            self._pos[COL],
+            (self._buffer.ncol(self._pos[ROW])-1))
+#+end_src
+
+_ONE SIGN OF A GOOD DESIGN_ is that there is one (hopefully obvious) place to make a change in order to fix a bug or add a feature. By that measure, we seem to be on the right track.
+
 *** Viewport
 
+We are finally ready to scroll the text vertically so that all of the lines can be seen no matter how small the window is.
+
+A full-featured editor would introduce another class, often called a *viewport*, to track the currently-visible portion of the buffer. To keep things simple, we will add two member variables to the buffer instead to keep track of the top-most visible line and the height of the window:
+
+#+begin_src python :tangle ./src/ch23/viewport.py
+class ViewportBuffer(ClipBuffer):
+    def __init__(self, lines):
+        super().__init__(lines)
+        self._top = 0
+        self._height = None
+
+    def lines(self):
+        return self._lines[self._top:self._top + self._height]
+
+    def set_height(self, height):
+        self._height = height
+
+    def _bottom(self):
+        return self._top + self._height
+#+end_src
+
+The most important change in the buffer is that ~lines~ returns the visible portion of the text rather than all of it. Another change is that the buffer initializes ~_height~ to None and requires someone to set it to a real value later BECAUSE the application’s ~_setup~ method creates the cursor, buffer, and window independently.
+
+IF we were building a single class rather than layering tutorial classes on top of each other, we would probably go back and change ~_setup~ to remove the need for this.
+
+Our buffer also gains two more methods. The first transforms the cursor’s position from buffer coordinates to screen coordinates:
+
+#+begin_src python :tangle ./src/ch23/viewport.py
+def transform(self, pos):
+    result = (pos[ROW] - self._top, pos[COL])
+    return result
+#+end_src
+
+The second method moves ~_top~ up or down when we reach the edge of the display:
+
+#+begin_src python
+def scroll(self, row, col):
+    old = self._top
+    if (row == self._top - 1) and self._top > 0:
+        self._top -= 1
+    elif (row == self._bottom()) and \
+         (self._bottom() < self.nrow()):
+        self._top += 1
+#+end_src
+
+As before, we derive a new application class to create the right kind of buffer object. We also override ~_run~ to scroll the buffer after each interaction with the user:
+
+#+begin_src python :tangle ./src/ch23/viewport.py
+class ViewportApp(ClipAppFixed):
+    def _make_buffer(self):
+        self._buffer = ViewportBuffer(self._lines)
+
+    def _make_cursor(self):
+        self._cursor = ViewportCursor(self._buffer, self._window)
+
+    def _run(self):
+        self._buffer.set_height(self._window.size()[ROW])
+        while self._running:
+            self._window.draw(self._buffer.lines())
+            screen_pos = self._buffer.transform(self._cursor.pos())
+            self._screen.move(*screen_pos)
+            self._interact()
+            self._buffer.scroll(*self._cursor.pos())
+#+end_src
+
+Notice that the ~ViewportApp~ class creates a ~ViewportCursor~. When we were testing the program, we discovered that we had introduced a bug: the cursor could go outside the window again if the line it was currently on was wider than the window. The solution is to add another check to ~_fix~ and to ensure that left and right movement constrain the cursor’s position in the same way as vertical movement:
+
+#+begin_src python :tangle ./src/ch23/viewport.py
+class ViewportCursor(ClipCursorFixed):
+    def __init__(self, buffer, window):
+        super().__init__(buffer)
+        self._window = window
+
+    def left(self):
+        super().left()
+        self._fix()
+
+    def right(self):
+        super().right()
+        self._fix()
+
+    def _fix(self):
+        self._pos[COL] = min(
+            self._pos[COL],
+            self._buffer.ncol(self._pos[ROW]) - 1,
+            self._window.size()[COL] - 1
+        )
+#+end_src
 
 * TODO Chapter 24: Undo and Redo
 :PROPERTIES:
@@ -8681,3 +9248,26 @@ Before they need version control tools or interpreters, programmers need a way t
 :header-args:python: :session ch24 :results output :async yes :eval no
 :header-args:sh: :session ch24-sh :results output :async yes
 :END:
+
+** Summary
+:PROPERTIES:
+:ID:       c0810b2f-ad5a-443d-88a5-40be8416b476
+:END:
+
+- Replace user interface components with mock objects to simplify testing.
+- Record actions and state to check behavior these mock objects.
+- Use objects to represent actions to record history and enable undo. (Right)
+- Recording state is easier but more expensive than recording changes. (True)
+
+Viewing text files is useful, but we’d like to be able to edit them as well. This chapter therefore modifies the file viewer of [[*Chapter 23: A File Viewer][Chapter 23: A File Viewer]] so that we can add and delete text. And since people make mistakes, we will also implement undo, which will introduce another commonly-used design pattern.
+
+[[Figure 24.2]] summarizes the concepts introduced in this chapter. Real text editors (even simple ones) obviously have many more features, but we have now seen most of the key ideas.
+
+#+name: Figure 24.2
+#+caption: Concept map
+[[file:images/Chapter_24:_Undo_and_Redo/2025-11-30_17-59-56_screenshot.png]]
+
+** Theory
+*** Getting Started
+*** Insertion and Deletion
+*** Going Backward

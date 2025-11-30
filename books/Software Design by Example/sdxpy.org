@@ -7935,7 +7935,7 @@ while solver.check() == sat:
 [A.1, C.1, B.1]
 #+end_example
 
-* TODO Chapter 21: Transferring Files
+* Chapter 21: Transferring Files
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/ftp/
 :header-args:python: :session ch21 :results output :async yes :eval no
@@ -7973,8 +7973,299 @@ While understanding how to send data over a network is important, knowing how to
 
 ** Theory
 *** Using TCP/IP
+:PROPERTIES:
+:ID:       694b069f-c19d-4741-83ad-1bb7ea281eed
+:END:
+Almost every program on the web uses a family of communication standards called *Internet Protocol* (IP).
+
+The one that concerns us is the *Transmission Control Protocol* (TCP/IP), which makes communication between computers LOOK LIKE _reading and writing files_.
+
+Programs using IP communicate through *sockets* ([[Figure 21.1]]). Each socket is one end of a point-to-point communication channel, just like a phone is one end of a phone call. A socket consists of an *IP address* that identifies a particular machine and a *port* on that machine.
+
+#+name: Figure 21.1
+#+caption: How sockets, IP addresses, and DNS work together
+[[file:images/Chapter_21:_Transferring_Files/2025-11-29_18-51-42_screenshot.png]]
+
+The IP address consists of four 8-bit numbers, which are usually written as 93.184.216.34; the *Domain Name System* (DNS) matches these numbers to symbolic names like 'example.com' that are easier for human beings to remember.
+
+A *port* is a number in the range 0-65535 that _uniquely identifies the socket_ on the host machine. (If an IP address is like a company’s phone number, then a port number is like an extension.) Ports 0-1023 are reserved for well-known TCP/IP applications like web servers; custom applications should use the remaining ports (and should allow users to decide which port, since there’s always the chance that two different people will pick 1234 or 6789).
+
+A basic socket client looks like this:
+
+#+begin_src python :tangle ./src/ch21/client_all.py
+import socket
+
+CHUNK_SIZE = 1024
+SERVER_ADDRESS = ("localhost", 8080)
+
+message = "message text"
+
+# We 'need' a socket to send data to another socket.
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(SERVER_ADDRESS)
+sock.sendall(bytes(message, "utf-8"))
+print(f"client sent {len(message)} bytes")
+
+received = sock.recv(CHUNK_SIZE)
+received_str = str(received, "utf-8")
+print(f"client received {len(received)} bytes: '{received_str}'")
+#+end_src
+
+We call it “basic” rather than “simple” because there’s a LOT going on here. From top to bottom:
+
+1. We import some modules and define two constants. The first, SERVER_ADDRESS, consists of a host identifier and a port. (The string "localhost" means “the current machine”.) The second, CHUNK_SIZE, will determine the maximum number of bytes in the messages we send and receive.
+
+2. We use socket.socket to create a new socket. The values AF_INET and SOCK_STREAM specify the protocols we’re using; we’ll always use those in our examples, so we won’t go into detail about alternatives.
+
+3. We connect to the server, send our message as a bunch of bytes with sock.sendall, and print a message saying the data’s been sent.
+
+4. We then read up to a kilobyte from the socket with sock.recv. If we were expecting longer messages, we’d keep reading from the socket until there was no more data.
+
+5. Finally, we print another message.
+
+The corresponding server has just as much low-level detail:
+
+#+begin_src python :tangle ./src/ch21/server_raw.py
+import socket
+
+CHUNK_SIZE = 1024
+
+def handler():
+    host, port = socket.gethostbyname("localhost"), 8080
+    server_socket = socket.socket()
+    server_socket.bind((host, port))
+
+    server_socket.listen(1)
+    conn, address = server_socket.accept()
+    print(f"Connection from {address}")
+
+    data = str(conn.recv(CHUNK_SIZE), "utf-8")
+    msg = f"got request from {address}: {len(data)}"
+    print(msg)
+
+    conn.send(bytes(msg, "utf-8"))
+    conn.close()
+#+end_src
+
+This code claims a socket, listens until it receives a single connection request, reads up to a kilobyte of data, prints a message, and replies to the client. [[Figure 21.2]] shows the order of operations and messages when we run the client and server in separate terminal windows.
+
+#+name: Figure 21.2
+#+caption: Steps and messages in client-server interaction
+[[file:images/Chapter_21:_Transferring_Files/2025-11-30_15-46-35_screenshot.png]]
+
+There’s a lot going on here, so most people who have to program at this level use Python’s https://docs.python.org/3/library/socketserver.html module, which provides two things: a class called ~TCPServer~ that manages incoming connections and another class called ~BaseRequestHandler~ that does everything /except/ process the incoming data. In order to do that, we derive a class of our own from ~BaseRequestHandler~ that provides a =handle= method ([[Figure 21.3]]). Every time ~TCPServer~ gets a new connection, it creates a new object of our class and calls that object’s =handle= method.
+
+#+name: Figure 21.3
+#+caption: Classes used in a basic TCP server
+[[file:images/Chapter_21:_Transferring_Files/2025-11-30_15-50-16_screenshot.png]]
+
+Using ~TCPServer~ and ~BaseRequestHandler~ as starting points, our server is:
+
+#+begin_src python :tangle ./src/ch21/server_lib.py
+import socketserver
+
+CHUNK_SIZE = 1024
+SERVER_ADDRESS = ("localhost", 8080)
+
+class MyHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        data = self.request.recv(CHUNK_SIZE)
+        cli = self.client_address[0]
+        msg = f"got request from {cli}: {len(data)}"
+        print(msg)
+        self.request.sendall(bytes(msg, "utf-8"))
+
+if __name__ == "__main__":
+    server = socketserver.TCPServer(SERVER_ADDRESS, MyHandler)
+    server.serve_forever()
+#+end_src
+
+These two classes use a different design than what we’ve seen before.
+
+INSTEAD OF creating one class for programmers to extend, the =socketserver= module puts the low-level details in ~TCPServer~, which can be used as-is, and asks users to create a plug-in class from ~BaseRequestHandler~ for the server to use.
+
+This approach isn’t intrinsically better or worse than the “derive and override” approach we’ve seen before; they’re just two more tools in a software designer’s toolbox.
+
 *** Chunking
+
+Our latest server reads data exactly once using ~self.request.recv(CHUNK_SIZE)~ with =CHUNK_SIZE= set to 1024. If the client sends more than a kilobyte of data, our server will ignore it. This can result in *deadlock*: the server is trying to send a reply while the client is trying to send the rest of the message, and since neither is listening, neither can move forward.
+
+Increasing the size of the 'memory buffer' used to store the incoming message WON’T make this problem go away: the client (or a malicious attacker) could always send more data than we have allowed for.
+
+Instead, we need to modify the server so that it keeps reading data until there is nothing left to read. Each time the ~handle~ method shown below goes around the loop, it tries to read another kilobyte. If it gets that much, it appends it to data and tries again. If it gets less than a kilobyte, we have reached the end of the transmission and can return the result:
+
+#+begin_src python :tangle ./src/ch21/server_chunk.py
+class FileHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        print("server about to start receiving")
+        data = bytes()
+        while True:
+            latest = self.request.recv(CHUNK_SIZE)
+            print(f"...server received {len(latest)} bytes")
+            data += latest
+            if len(latest) < CHUNK_SIZE:
+                print(f"...server breaking")
+                break
+        print(f"server finished received, about to reply")
+        self.request.sendall(bytes(f"{len(data)}", "utf-8"))
+#+end_src
+
+We can modify the client to send data in chunks as well, but we handle this a little differently.
+
+Each call to ~conn.send~ in the function below tries to send all of the remaining data. The value returned by the function call tells us how many bytes were actually sent. If that number gets us to the end of the data we’re sending, the function can exit the loop. If not, it adds the number of bytes sent to total so that it knows where to start sending the next time around:
+
+#+begin_src python :tangle ./src/ch21/client_chunk.py
+def send_file(conn, filename):
+    with open(filename, "rb") as reader:
+        data = reader.read()
+    print(f"client sending {len(data)} bytes")
+    total = 0
+    while total < len(data):
+        sent = conn.send(data[total:])
+        print(f"...client sent {sent} bytes")
+        if sent == 0:
+            break
+        total += sent
+        print(f"...client total now {total} bytes")
+    return total
+#+end_src
+
+While we’re here, we might as well write a function to create a socket:
+
+#+begin_src python :tangle ./src/ch21/client_chunk.py
+def make_socket(host, port):
+    conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    conn.connect((host, port))
+    return conn
+#+end_src
+
+and another to wait for the acknowledgment from the server:
+
+#+begin_src python :tangle ./src/ch21/client_chunk.py
+def receive_ack(conn):
+    received = conn.recv(CHUNK_SIZE)
+    return int(str(received, "utf-8"))
+#+end_src
+
+The main program is then:
+
+#+begin_src python :tangle ./src/ch21/client_chunk.py
+def main(host, port, filename):
+    conn = make_socket(host, port)
+    bytes_sent = send_file(conn, filename)
+    print(f"client main sent {bytes_sent} bytes")
+    bytes_received = receive_ack(conn)
+    print(f"client main received {bytes_received} bytes")
+    print(bytes_sent == bytes_received)
+#+end_src
+
+When we run the client and server, the client prints:
+
+#+begin_example
+client sending 1236 bytes
+...client sent 1236 bytes
+...client total now 1236 bytes
+client main sent 1236 bytes
+client main received 1236 bytes
+True
+#+end_example
+
+and the server prints
+
+#+begin_example
+server about to start receiving
+...server received 1024 bytes
+...server received 212 bytes
+...server breaking
+server finished received, about to reply
+#+end_example
+
 *** Testing
+
+Testing single-process command-line applications is hard enough.
+
+To test a client-server application like the one above, we have to start the server, wait for it to be ready, then run the client, and then shut down the server if it hasn’t shut down by itself. It’s easy to do this interactively, but automating it is difficult BECAUSE 1) there’s no way to tell how long to wait before trying to talk to the server and 2) no easy way to shut the server down.
+
+A partial solution is to use a mock object ([[*Chapter 9: Protocols][Chapter 9: Protocols]]) in place of a real network connection so that we can test each part of the application independently. To start, let’s refactor our server’s =handle= method so that it calls ~self.debug~ instead of printing directly:
+
+#+begin_src python :tangle ./src/ch21/logging_handler.py
+class LoggingHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.debug("server about to start receiving")
+        data = bytes()
+        while True:
+            latest = self.request.recv(BLOCK_SIZE)
+            self.debug(f"...server received {len(latest)} bytes")
+            data += latest
+            if len(latest) < BLOCK_SIZE:
+                self.debug(f"...server breaking")
+                break
+        self.debug(f"server finished received, about to reply")
+        self.request.sendall(bytes(f"{len(data)}", "utf-8"))
+#+end_src
+
+The ~debug~ method takes any number of arguments and passes them to ~print~:
+
+#+begin_src python :tangle ./src/ch21/logging_handler.py
+def debug(self, *args):
+    print(*args)
+#+end_src
+
+The =handle= method in this class relies on the ~self.request~ object created by the framework to send and receive data. We can create a testable server by deriving a class from ~LoggingHandler~ that inherits the =handle= method (which we want to test) but creates a mock 'request object' and overrides the ~debug~ method so it doesn’t print logging messages:
+
+#+begin_src python :tangle ./src/ch21/test_server.py
+class MockHandler(LoggingHandler):
+    def __init__(self, message):
+        self.request = MockRequest(message)
+
+    def debug(self, *args):
+        pass
+#+end_src
+
+- NOTE :: that we DON’T call the constructor of ~LoggingHandler~ in the constructor of ~MockHandler~. If we did, we would trigger a call to the constructor of ~BaseRequestHandler~, which would then be upset because we haven’t defined a host or a port.
+
+The class we use to create our mock request object needs three things:
+
+1. A constructor that records the data we’re going to pretend to have received over a socket and does whatever other setup is needed.
+
+2. A ~recv~ method with the same signature as the real object’s ~recv~ method.
+
+3. A ~sendall~ method whose signature matches that of the real thing as well.
+
+The whole class is:
+
+#+begin_src python :tangle ./src/ch21/test_server.py
+class MockRequest:
+    def __init__(self, message):
+        self._message = message
+        self._position = 0
+        self._sent = []
+
+    def recv(self, max_bytes):
+        assert self._position <= len(self._message)
+        top = min(len(self._message), self._position + BLOCK_SIZE)
+        result = self._message[self._position:top]
+        self._position = top
+        return result
+
+    def sendall(self, outgoing):
+        self._sent.append(outgoing)
+#+end_src
+
+With it, we can now write unit tests like this:
+
+#+begin_src python :tangle ./src/ch21/test_server.py
+def test_short():
+    msg = bytes("message", "utf-8")
+    handler = MockHandler(msg)
+    handler.handle()
+    assert handler.request._sent == [bytes(f"{len(msg)}", "utf-8")]
+#+end_src
+
+The key to our approach is the notion of *fidelity*: how close is what we test to what we use in production? In an ideal world they are exactly the same, but in cases like this it makes sense to sacrifice a little fidelity for testability’s sake.
+
+- test fidelity ::
+  The degree to which a mock object or other replacement for part or all of a system mimics the behavior of that system for testing purposes.
 
 * TODO Chapter 22: Serving Web Pages
 :PROPERTIES:

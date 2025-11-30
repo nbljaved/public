@@ -9242,7 +9242,7 @@ class ViewportCursor(ClipCursorFixed):
         )
 #+end_src
 
-* TODO Chapter 24: Undo and Redo
+* Chapter 24: Undo and Redo
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/undo/
 :header-args:python: :session ch24 :results output :async yes :eval no
@@ -9269,5 +9269,369 @@ Viewing text files is useful, but we’d like to be able to edit them as well. T
 
 ** Theory
 *** Getting Started
+
+Our file viewer has four classes:
+
+- A =Window= can draw lines and report its size.
+
+- A =Buffer= stores lines of text, keeps track of a viewport, and transforms buffer coordinates to screen coordinates.
+
+- A =Cursor= knows its position in the buffer and can move up, down, left, and right.
+
+- The =App= makes a window, a buffer, and a cursor, then maps keys to actions.
+
+To make unit testing simpler, we start by adding one more class: a replacement for the screen object provided by the ~curses~ module.
+
+This class stores the current state of the display in a rectangular grid so that our tests can check it easily. It also takes a list of keystrokes as input to simulate interaction with the user:
+
+#+begin_src python :tangle ./src/ch24/headless.py
+class HeadlessScreen:
+    def __init__(self, size, keystrokes):
+        self._size = size
+        self._keys = keystrokes
+        self._i_key = 0
+        self.erase()
+
+    def getkey(self):
+        if self._i_key == len(self._keys):
+            key = "CONTROL_X"
+        else:
+            key = self._keys[self._i_key]
+            self._i_key += 1
+        return key
+
+    def addstr(self, row, col, text):
+        assert 0 <= row < self._size[ROW]
+        assert col == 0
+        assert len(text) <= self._size[COL]
+        self._display[row] = text + self._display[row][len(text):]
+#+end_src
+
+GUI applications that don’t display anything are often called *headless* applications. Giving our simulated keystrokes to the screen seems odd -- it would make more sense for ~App~ to have a method that gets keystrokes -- but it’s the simplest way to fit everything in beside the classes we already have.
+
+#+caption: Clean Exit
+#+begin_quote
+Notice that when the screen runs out of simulated keystrokes it produces CONTROL_X, meaning “exit the application”. We need this to break out of the keystroke-processing loop in the application, and no, we didn’t think of this up front.
+#+end_quote
+
+
+To finish this change, we also need to define a ~HeadlessWindow~ that takes a desired screen size and passes it to the screen:
+
+#+begin_src python :tangle ./src/ch24/headless.py
+class HeadlessWindow(Window):
+    def __init__(self, screen, size):
+        assert size is not None and len(size) == 2
+        super().__init__(screen, size)
+#+end_src
+
+Finally, our new application class records keystrokes, the cursor position, and the screen contents for testing:
+
+#+begin_src python :tangle ./src/ch24/headless.py
+class HeadlessApp(App):
+    def __init__(self, size, lines):
+        super().__init__(size, lines)
+        self._log = []
+
+    def get_log(self):
+        return self._log
+
+    def _add_log(self, key):
+        self._log.append((key, self._cursor.pos(), self._screen.display()))
+
+    def _make_window(self):
+        self._window = HeadlessWindow(self._screen, self._size)
+
+#+end_src
+
+We can now write tests like this:
+
+#+begin_src python :tangle ./src/ch24/test_headless.py
+def test_scroll_down():
+    size = (2, 2)
+    lines = ["abc", "def", "ghi"]
+    keys = ["KEY_DOWN"] * 3
+    screen = HeadlessScreen(size, keys)
+    app = HeadlessApp(size, lines)
+    app(screen)
+    assert app.get_log()[-1] == ("CONTROL_X", (2, 0), ["de", "gh"])
+#+end_src
+
 *** Insertion and Deletion
+
+We are now ready to implement insertion and deletion. The first step is to add methods to the buffer class that update a line of text:
+
+#+begin_src python :tangle ./src/ch24/insert_delete.py
+class InsertDeleteBuffer(Buffer):
+    def insert(self, pos, char):
+        assert 0 <= pos[ROW] < self.nrow()
+        assert 0 <= pos[COL] <= self.ncol(pos[ROW])
+        line = self._lines[pos[ROW]]
+        line = line[:pos[COL]] + char + line[pos[COL]:]
+        self._lines[pos[ROW]] = line
+
+    def delete(self, pos):
+        assert 0 <= pos[ROW] < self.nrow()
+        assert 0 <= pos[COL] < self.ncol(pos[ROW])
+        line = self._lines[pos[ROW]]
+        line = line[:pos[COL]] + line[pos[COL] + 1:]
+        self._lines[pos[ROW]] = line
+#+end_src
+
+Notice that we delete the character /under/ the cursor, not the one to the left of the cursor: this is delete-in-place rather thanb backspace-delete. Notice also that we have done a little defensive programming by checking that the coordinates given for the operation make sense.
+
+The window, cursor, and screen don’t need to change to support insertion and deletion, but the application class needs several updates. The first is to define the set of characters that can be inserted, which for our example will be letters and digits, and to create a buffer of the appropriate kind:
+
+#+begin_src python :tangle ./src/ch24/insert_delete.py
+class InsertDeleteApp(HeadlessApp):
+    INSERTABLE = set(string.ascii_letters + string.digits)
+
+    def _make_buffer(self):
+        self._buffer = InsertDeleteBuffer(self._lines)
+#+end_src
+
+We also need to create handlers for insertion and deletion:
+
+#+begin_src python :tangle ./src/ch24/insert_delete.py
+def _do_DELETE(self):
+    self._buffer.delete(self._cursor.pos())
+
+def _do_INSERT(self, key):
+    self._buffer.insert(self._cursor.pos(), key)
+#+end_src
+
+Finally, since we don’t want to have to add one handler for each insertable character, let’s write a ~_get_key~ method that returns a pair of values. The first indicates the “family” of the key, while the second is the actual key. If the family is None, the key is a special key with its own handler; otherwise, we look up the handler for the key’s family (Right, Makes sense!):
+
+#+begin_src python :tangle ./src/ch24/insert_delete.py
+def _get_key(self):
+    key = self._screen.getkey()
+    if key in self.INSERTABLE:
+        return "INSERT", key
+    else:
+        return None, key
+
+def _interact(self):
+    family, key = self._get_key()
+    if family is None:
+        name = f"_do_{key}"
+        if hasattr(self, name):
+            getattr(self, name)()
+    else:
+        name = f"_do_{family}"
+        if hasattr(self, name):
+            getattr(self, name)(key)
+    self._add_log(key)
+#+end_src
+
+We’re going to write a lot of tests for this application, so let’s write a helper function to create a fixture, run the application, and return it:
+
+#+begin_src python :tangle ./src/ch24/test_insert_delete.py
+def make_fixture(keys, size, lines):
+    screen = HeadlessScreen(size, keys)
+    app = InsertDeleteApp(size, lines)
+    app(screen)
+    return app
+#+end_src
+
+Our tests are now straightforward to set up and check:
+
+#+begin_src python :tangle ./src/ch24/test_insert_delete.py
+def test_delete_middle():
+    app = make_fixture(["KEY_RIGHT", "DELETE"], (1, 3), ["abc"])
+    assert app.get_log()[-1] == ("CONTROL_X", (0, 1), ["ac_"])
+#+end_src
+
 *** Going Backward
+:PROPERTIES:
+:ID:       3223b23e-d06b-4ccd-8fc3-f02945f0ba3e
+:END:
+
+In order to undo things we have to:
+
+1. keep track of /actions/ and reverse them, or
+2. keep track of /state/ and restore it.
+
+Recording actions can be trickier to implement BUT requires less space than saving the entire state of the application after each change, so that’s what most systems do. The starting point is to append a record of every action to a log:
+
+#+begin_src python :tangle ./src/ch24/history.py
+class HistoryApp(InsertDeleteApp):
+    def __init__(self, size, keystrokes):
+        super().__init__(size, keystrokes)
+        self._history = []
+
+    def get_history(self):
+        return self._history
+
+    def _do_DELETE(self):
+        row, col = self._cursor.pos()
+        char = self._buffer.char((row, col))
+        self._history.append(("delete", (row, col), char))
+        self._buffer.delete(self._cursor.pos())
+#+end_src
+
+*Q.* But what about undoing cursor movement ?
+
+*Q.* If we add a character, move to another location, and then undo, shouldn’t the cursor go back to where it was before deleting the character?
+
+*Q.* And how are we going to interpret these log records?
+
+*Q.* Will we need a second dispatch method with its own handlers?
+
+
+*A.* The common solution to these problems is to use the *COMMAND* DESIGN PATTERN. This pattern turns verbs into nouns, i.e., each action is represented as an object with methods to go forward and backward. Our actions all derive from an abstract base class so that they can be used interchangeably. That base class is:
+
+#+begin_src python :tangle ./src/ch24/action.py
+class Action:
+    def __init__(self, app):
+        self._app = app
+
+    def do(self):
+        raise NotImplementedError(f"{self.__class__.__name__}: do")
+
+    def undo(self):
+        raise NotImplementedError(f"{self.__class__.__name__}: undo")
+#+end_src
+
+The child classes for insertion and deletion are:
+
+#+begin_src python :tangle ./src/ch24/action.py
+class Insert(Action):
+    def __init__(self, app, pos, char):
+        super().__init__(app)
+        self._pos = pos
+        self._char = char
+
+    def do(self):
+        self._app._buffer.insert(self._pos, self._char)
+
+    def undo(self):
+        self._app._buffer.delete(self._pos)
+
+class Delete(Action):
+    def __init__(self, app, pos):
+        super().__init__(app)
+        self._pos = pos
+        self._char = self._app._buffer.char(pos)
+
+    def do(self):
+        self._app._buffer.delete(self._pos)
+
+    def undo(self):
+        self._app._buffer.insert(self._pos, self._char)
+#+end_src
+
+We could implement one class for each direction of cursor movement, but instead choose to create a single class:
+
+#+begin_src python :tangle ./src/ch24/action.py
+class Move(Action):
+    def __init__(self, app, direction):
+        super().__init__(app)
+        self._direction = direction
+        self._old = self._app._cursor.pos()
+        self._new = None
+
+    def do(self):
+        self._app._cursor.act(self._direction)
+        self._new = self._app._cursor.pos()
+
+    def undo(self):
+        self._app._cursor.move_to(self._old)
+#+end_src
+
+This class records the new cursor position as well as the old one to make debugging easier. It depends on adding two new methods to ~Cursor~ to move in a particular direction by name (e.g., “right” or “left”) and to move to a particular location:
+
+#+begin_src python :tangle ./src/ch24/cursor.py
+def act(self, direction):
+    assert hasattr(self, direction)
+    getattr(self, direction)()
+
+def move_to(self, pos):
+    self._pos = pos
+    self._fix()
+#+end_src
+
+Our application’s ~_interact~ method changes too. Instead of relying on keystroke handler methods to do things, it expects them to create action objects ([[Figure 24.1]]). These objects are appended to the application’s history, and then asked to do whatever they do:
+
+#+begin_src python :tangle ./src/ch24/action.py
+def _interact(self):
+    family, key = self._get_key()
+    name = f"_do_{family}" if family else f"_do_{key}"
+    if not hasattr(self, name):
+        return
+    action = getattr(self, name)(key)
+    self._history.append(action)
+    action.do()
+    self._add_log(key)
+#+end_src
+
+#+name: Figure 24.1
+#+caption: Representing actions as objects in the Command design pattern
+[[file:images/Chapter_24:_Undo_and_Redo/2025-11-30_22-31-13_screenshot.png]]
+
+- Note :: that we have modified all the handler methods to take the keystroke as an input argument so that we don’t have to distinguish between cases where it’s needed and cases where it isn’t.
+
+  This simplifies the code a little at the expense of introducing unused parameters into the handlers for special keys like cursor movement.
+
+Finally, each handler method now builds an object and returns it:
+
+#+begin_src python :tangle ./src/ch24/action.py
+def _do_DELETE(self, key):
+    return Delete(self, self._cursor.pos())
+
+def _do_INSERT(self, key):
+    return Insert(self, self._cursor.pos(), key)
+
+def _do_KEY_UP(self, key):
+    return Move(self, "up")
+#+end_src
+
+With all these changes in place, our application /almost/ works.
+
+We add an ~_do_UNDO~ handler that pops the most recent action from the history and calls its undo method.
+
+When we test this, though, we wind up in an infinite loop (LOL) because we are appending the action to the history before doing the action, so we are essentially undoing our undo forever.
+
+The solution is to modify the base class ~Action~ to have a ~.save~ method that tells the application whether or not to save this action. The default implementation returns True, but we override it in ~Undo~ to return False:
+
+#+begin_src python :tangle ./src/ch24/undoable.py
+class Undo(Action):
+    def do(self):
+        action = self._app._history.pop()
+        action.undo()
+
+    def save(self):
+        return False
+
+    def __str__(self):
+        return f"Undo({self._app._history[-1]})"
+#+end_src
+
+Note that popping the most recent action off the history stack only works once we modify the application’s ~_interact~ method so that it only saves actions that ought to be saved:
+
+#+begin_src python :tangle ./src/ch24/undoable.py
+class UndoableApp(ActionApp):
+    def _interact(self):
+        family, key = self._get_key()
+        name = f"_do_{family}" if family else f"_do_{key}"
+        if not hasattr(self, name):
+            return
+        action = getattr(self, name)(key)
+        action.do()
+        if action.save():
+            self._history.append(action)
+        self._add_log(key)
+#+end_src
+
+We can now write tests like this to check that we can insert a character, undo the action, and get back the screen we originally had:
+
+#+begin_src python :tangle ./src/ch24/test_undoable.py
+def test_insert_undo():
+    app = make_fixture(["z", "UNDO"])
+    assert get_screen(app) == ["ab", "cd"]
+#+end_src
+
+* TODO Chapter 25: A Virtual Machine
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/vm/
+:header-args:python: :session ch25 :results output :async yes :eval no
+:header-args:sh: :session ch25-sh :results output :async yes
+:END:

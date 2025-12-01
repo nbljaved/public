@@ -1,0 +1,4 @@
+#+title: Architecture Patterns with Python (aka Cosmic Python Book)
+#+auto_tangle: t
+#+startup: overview
+https://www.cosmicpython.com/book/preface.html

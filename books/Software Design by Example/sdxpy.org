@@ -9629,9 +9629,504 @@ def test_insert_undo():
     assert get_screen(app) == ["ab", "cd"]
 #+end_src
 
-* TODO Chapter 25: A Virtual Machine
+* Chapter 25: A Virtual Machine
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/vm/
 :header-args:python: :session ch25 :results output :async yes :eval no
 :header-args:sh: :session ch25-sh :results output :async yes
 :END:
+
+** Summary
+:PROPERTIES:
+:ID:       9273532c-f25c-4565-9834-c51c0620a4be
+:END:
+
+- Every computer has a processor with a particular instruction set, some registers, and memory.
+- Instructions are just numbers but may be represented as assembly code.
+- Instructions may refer to registers, memory, both, or neither.
+- A processor usually executes instructions in order but may jump to another location based on whether a conditional is true or false.
+
+The interpreter in [[*Chapter 7: An Interpreter][Chapter 7: An Interpreter]] relied on Python to do most of the actual work. The standard version of Python is implemented in C and relies on C’s operators to add numbers, index arrays, and so on, but C is compiled to instructions for a particular processor. Each operation in the little language of [[*Chapter 7: An Interpreter][Chapter 7: An Interpreter]] is therefore expanded by several layers of software to become something that hardware can actually run.
+
+To show how that lower layer works, this chapter builds a simulator of a small computer.
+
+#+name: Figure 25.6
+#+caption: Concept map for virutal machine and assembler
+[[file:images/Chapter_25:_A_Virtual_Machine/2025-12-01_13-25-40_screenshot.png]]
+
+[[Figure 25.6]] summarizes the new ideas in this chapter.
+
+Real processors and the VMs for languages like Python are more complex, but experience shows that keeping things simple makes it much easier to make them fast and reliable.
+
+** Theory
+*** Architecture
+:PROPERTIES:
+:ID:       76afba3d-8d96-4372-bd10-4f745f0751c0
+:END:
+
+- virtual machine ::
+  A program that pretends to be a computer. This may seem a bit redundant, but VMs are quick to create and start up, and changes made inside the virtual machine are contained within that VM so we can install new packages or run a completely different operating system without affecting the underlying computer.
+
+Our virtual machine (VM) simulates a computer with three parts ([[Figure 25.1]]):
+
+1. The *instruction pointer* (IP) holds the memory address of the next instruction to execute. It is automatically initialized to point at address 0, so that is where every program must start. This requirement is part of our VM’s Application Binary Interface (ABI).
+
+2. Four *registers* named R0 to R3 that instructions can access directly. There are no memory-to-memory operations in our VM: everything happens in or through registers.
+
+3. 256 *words* of memory, each of which can store a single value. Both the program and its data live in this single block of memory; we chose the size 256 so that the address of each word will fit in a single byte.
+
+#+name: Figure 25.1
+#+caption: Architecture of the virtual machine
+[[file:images/Chapter_25:_A_Virtual_Machine/2025-12-01_13-27-02_screenshot.png]]
+
+Our processor’s *instruction set* defines what it can do. Instructions are just numbers, but we will write them in a simple text format called _assembly code_ that gives those number human-readable names.
+
+The instructions for our VM are 3 bytes long. The _op code_ fits in one byte, and each instruction may include zero, one, or two single-byte operands. (Instructions are sometimes called *bytecode*, since they’re packed into bytes, but so is everything else in a computer.)
+
+Each operand is a:
+- register identifier,
+- a constant, or
+- an address, which is just a constant that identifies a location in memory.
+
+Since constants have to fit in one byte, this means that the largest number we can represent directly is 256. [[Table 25.1]] uses the letters 'r' and 'v' to indicate instruction format, where 'r' indicates a register identifier and 'v' indicates a constant value.
+
+#+name: Table 25.1
+#+caption: Virtual machine op codes
+[[file:images/Chapter_25:_A_Virtual_Machine/2025-12-01_15-54-51_screenshot.png]]
+
+To start building our virtual machine, we put the VM’s details in a file that can be loaded by other modules:
+
+#+begin_src python :tangle ./src/ch25/architecture.py
+NUM_REG = 4  # number of registers
+RAM_LEN = 256  # number of words in RAM
+
+OPS = {
+    "hlt": {"code": 0x1, "fmt": "--"},  # Halt program
+    "ldc": {"code": 0x2, "fmt": "rv"},  # Load value
+    "ldr": {"code": 0x3, "fmt": "rr"},  # Load register
+    "cpy": {"code": 0x4, "fmt": "rr"},  # Copy register
+    "str": {"code": 0x5, "fmt": "rr"},  # Store register
+    "add": {"code": 0x6, "fmt": "rr"},  # Add
+    "sub": {"code": 0x7, "fmt": "rr"},  # Subtract
+    "beq": {"code": 0x8, "fmt": "rv"},  # Branch if equal
+    "bne": {"code": 0x9, "fmt": "rv"},  # Branch if not equal
+    "prr": {"code": 0xA, "fmt": "r-"},  # Print register
+    "prm": {"code": 0xB, "fmt": "r-"},  # Print memory
+}
+
+OP_MASK = 0xFF  # select a single byte
+OP_SHIFT = 8  # shift up by one byte
+OP_WIDTH = 6  # op width in characters when printing
+#+end_src
+
+There isn’t a name for this design pattern (LOL), but putting all the constants that define a system in one file instead of scattering them across multiple files makes them easier to find as well as ensuring consistency.
+
+*** Execution
+:PROPERTIES:
+:ID:       99fd3daf-ccc8-4576-900a-0cbc958df8c0
+:END:
+We start by defining a class with an instruction pointer, some registers, and some memory along with a prompt for output.
+
+- A program is just an array of numbers representing instructions.
+- To load a program into our VM, we copy those numbers into memory and reset the instruction pointer and registers:
+
+#+begin_src python :tangle ./src/ch25/vm.py :noweb yes
+class VirtualMachine:
+    def __init__(self):
+        self.initialize([])
+        self.prompt = ">>"
+
+    def initialize(self, program):
+        assert len(program) <= RAM_LEN, "Program too long"
+        self.ram = [
+            program[i] if (i < len(program)) else 0
+            for i in range(RAM_LEN)
+        ]
+        self.ip = 0
+        self.reg = [0] * NUM_REG
+
+    <<def fetch>>
+
+    <<def run>>
+#+end_src
+
+- NOTE :: that the VM’s constructor calls ~initialize~ with an empty array (i.e., a program with no instructions) to do initial setup.
+
+  If an object has a method to reset or reinitialize itself, having its constructor use that method is a way to avoid duplicating code.
+
+To execute the next instruction, the VM gets the value in memory that the instruction pointer currently refers to and moves the instruction pointer on by one address. It then uses bitwise operations ([[*Chapter 17: Binary Data][Chapter 17: Binary Data]]) to extract the op code and operands from the instruction ([[Figure 25.2]]).
+
+#+name: def fetch
+#+begin_src python
+def fetch(self):
+    instruction = self.ram[self.ip]
+    self.ip += 1
+    op = instruction & OP_MASK
+    instruction >>= OP_SHIFT
+    arg0 = instruction & OP_MASK
+    instruction >>= OP_SHIFT
+    arg1 = instruction & OP_MASK
+    return [op, arg0, arg1]
+#+end_src
+
+#+name: Figure 25.2
+#+caption: Using bitwise operations to unpack instructions
+[[file:images/Chapter_25:_A_Virtual_Machine/2025-12-01_16-05-36_screenshot.png]]
+
+We always unpack two operands regardless of whether the instructions have them or not, since this is what most hardware implementations would do.
+
+#+caption: Processor Design
+#+begin_quote
+Some processors do have variable-length instructions, but they make the hardware more complicated and therefore slower. To decide whether these costs are worth paying, engineers rely on simulation and profiling ([[*Chapter 15: Performance Profiling][Chapter 15: Performance Profiling]]).
+
+Backward compatibility is also an issue: if earlier processors supported variable-length instructions, later ones must somehow do so as well in order to run old programs.
+#+end_quote
+
+The next step is to add a ~run~ method to our VM that fetches instructions and executes them until told to stop:
+
+#+name: def run
+#+begin_src python
+def run(self):
+    running = True
+    while running:
+        op, arg0, arg1 = self.fetch()
+        if op == OPS["hlt"]["code"]:
+            running = False
+        elif op == OPS["ldc"]["code"]:
+            self.reg[arg0] = arg1
+        elif op == OPS["ldr"]["code"]:
+            self.reg[arg0] = self.ram[self.reg[arg1]]
+        elif op == OPS["cpy"]["code"]:
+            self.reg[arg0] = self.reg[arg1]
+        else:
+            assert False, f"Unknown op {op:06x}"
+#+end_src
+
+Let’s look more closely at three of these instructions. The first, str, stores the value of one register in the address held by another register:
+
+#+begin_src python
+elif op == OPS["str"]["code"]:
+    self.ram[self.reg[arg1]] = self.reg[arg0]
+#+end_src
+
+Adding the value in one register to the value in another register is simpler:
+
+#+begin_src python
+elif op == OPS["add"]["code"]:
+    self.reg[arg0] += self.reg[arg1]
+#+end_src
+
+as is jumping to a fixed address if the value in a register is zero. This conditional jump instruction is how we implement if:
+
+#+begin_src python
+elif op == OPS["beq"]["code"]:
+    if self.reg[arg0] == 0:
+        self.ip = arg1
+#+end_src
+
+*** Assembly Code
+:PROPERTIES:
+:ID:       892670af-5aab-43b6-965e-e2ce08b7eece
+:END:
+
+We could write out numerical op codes by hand just as early programmers did.
+However, it is much easier to use an *assembler*, which is just a small compiler for a language that very closely represents actual machine instructions.
+
+Each command in our assembly languages matches an instruction in the VM. Here’s an assembly language program to print the value stored in R1 and then halt:
+
+#+begin_example
+# Print initial contents of R1.
+prr R1
+hlt
+#+end_example
+
+Its numeric representation (in hexadecimal) is:
+
+#+begin_example
+# 3 bytes in each instruction, 1 byte is 8 bits, therefore 6 hexadecimal
+# as 1 hexadicmal uses 4 bits
+00010a
+000001
+#+end_example
+
+One thing the assembly language has that the instruction set doesn’t is _labels_ on addresses in memory. The label ~loop~ doesn’t take up any space; instead, it tells the assembler to give the address of the next instruction a name so that we can refer to ~@loop~ in jump instructions. For example, this program prints the numbers from 0 to 2 ([[Figure 25.3]]):
+
+- label (of address in memory) ::
+  A human-readable name given to a particular location in memory when writing programs in assembly code.
+
+#+begin_example
+# Count up to 3.
+# - R0: loop index.
+# - R1: loop limit.
+ldc R0 0
+ldc R1 3
+loop:
+prr R0
+ldc R2 1
+add R0 R2
+cpy R2 R1
+sub R2 R0
+bne R2 @loop
+hlt
+
+# bytecode of above
+000002
+030102
+00000a
+010202
+020006
+010204
+000207
+020209
+000001
+#+end_example
+
+#+name: Figure 25.3
+#+caption: Flowchart of assembly language program to count up from 0 to 2.
+[[file:images/Chapter_25:_A_Virtual_Machine/2025-12-01_16-18-37_screenshot.png]]
+
+Let’s trace this program’s execution ([[Figure 25.4]]):
+
+1. R0 holds the current loop index.
+2. R1 holds the loop’s upper bound (in this case 3).
+3. The loop prints the value of R0 (one instruction).
+4. The program adds 1 to R0. This takes two instructions because we can only add register-to-register.
+5. It checks to see if we should loop again, which takes three instructions.
+6. If the program doesn’t jump back, it halts.
+
+#+name: Figure 25.4
+#+caption: (VERY NICE) Tracing registers and memory values for a simple counting program
+[[file:images/Chapter_25:_A_Virtual_Machine/2025-12-01_16-19-52_screenshot.png]]
+
+The implementation of the assembler mirrors the simplicity of assembly language. The main method gets interesting lines, finds the addresses of labels, and turns each remaining line into an instruction:
+
+#+begin_src python :tangle ./src/ch25/assembler.py :noweb yes
+class Assembler:
+    def assemble(self, lines):
+        lines = self._get_lines(lines)
+        labels = self._find_labels(lines)
+        instructions = [
+            ln for ln in lines if not self._is_label(ln)
+        ]
+        compiled = [
+            self._compile(instr, labels) for instr in instructions
+        ]
+        program = self._to_text(compiled)
+        return program
+
+    <<def _find_labels>>
+
+    <<def _compile>>
+
+    <<def _val>>
+
+    <<def _combine>>
+#+end_src
+
+To find labels, we go through the lines one by one and either save the label or increment the current address (_because labels don’t take up space_):
+
+#+name: def _find_labels
+#+begin_src python
+def _find_labels(self, lines):
+    result = {}
+    loc = 0
+    for ln in lines:
+        if self._is_label(ln):
+            label = ln[:-1].strip()
+            assert label not in result, f"Duplicated {label}"
+            result[label] = loc
+        else:
+            loc += 1
+    return result
+
+def _is_label(self, line):
+    return line.endswith(":")
+#+end_src
+
+To compile a single instruction we break the line into pieces, look up the format for the operands, and pack the values:
+
+#+name: def _compile
+#+begin_src python
+def _compile(self, instruction, labels):
+    tokens = instruction.split()
+    op, args = tokens[0], tokens[1:]
+    fmt, code = OPS[op]["fmt"], OPS[op]["code"]
+
+    if fmt == "--":
+        return self._combine(code)
+
+    elif fmt == "r-":
+        return self._combine(self._reg(args[0]), code)
+
+    elif fmt == "rr":
+        return self._combine(
+            self._reg(args[1]), self._reg(args[0]), code
+        )
+
+    elif fmt == "rv":
+        return self._combine(
+            self._val(args[1], labels),
+            self._reg(args[0]),
+            code
+        )
+#+end_src
+
+to convert a value, we either look up the label’s address (if the value starts with @) or convert the value to a number:
+
+#+name: def _val
+#+begin_src python
+def _val(self, token, labels):
+    if token[0] != "@":
+        return int(token)
+    lbl = token[1:]
+    assert lbl in labels, f"Unknown label '{token}'"
+    return labels[lbl]
+#+end_src
+
+Combining op codes and operands into a single value is the reverse of the unpacking done by the virtual machine:
+
+#+name: def _combine
+#+begin_src python
+def _combine(self, *args):
+    assert len(args) > 0, "Cannot combine no arguments"
+    result = 0
+    for a in args:
+        result <<= OP_SHIFT
+        result |= a
+    return result
+#+end_src
+
+As a test, this program counts up to 3:
+
+#+begin_example
+# Count up to 3.
+# - R0: loop index.
+# - R1: loop limit.
+ldc R0 0
+ldc R1 3
+loop:
+prr R0
+ldc R2 1
+add R0 R2
+cpy R2 R1
+sub R2 R0
+bne R2 @loop
+hlt
+#+end_example
+
+#+begin_example
+>> 0
+>> 1
+>> 2
+R000000 = 000003
+R000001 = 000003
+R000002 = 000000
+R000003 = 000000
+000000:   000002  030102  00000a  010202
+000004:   020006  010204  000207  020209
+000008:   000001  000000  000000  000000
+#+end_example
+
+*** Arrays
+:PROPERTIES:
+:ID:       3f5e70c4-5ddb-49b9-9480-3a2e049d01dc
+:END:
+
+It’s tedious to write programs when each value needs a unique name.
+
+We can do a lot more once we have arrays, so let’s add those to our assembler. We don’t have to make any changes to the virtual machine, which doesn’t care if we think of a bunch of numbers as individuals or elements of an array, but we do need a way to create arrays and refer to them.
+
+We will allocate storage for arrays at the end of the program by using ~.data~ on a line of its own to mark the start of the data section and then ~label: number~ to give a region a name and allocate some storage space ([[Figure 25.5]]).
+
+#+name: Figure 25.5
+#+caption: Allocating storage for arrays in the virtual machine
+[[file:images/Chapter_25:_A_Virtual_Machine/2025-12-01_16-38-13_screenshot.png]]
+
+This enhancement only requires a few changes to the assembler. First, we need to split the lines into instructions and data allocations:
+
+#+begin_src python :tangle ./src/ch25/arrays.py
+DIVIDER = ".data"
+
+def assemble(self, lines):
+    lines = self._get_lines(lines)
+    to_compile, to_allocate = self._split(lines)
+
+    labels = self._find_labels(lines)
+    instructions = [ln for ln in to_compile if not self._is_label(ln)]
+
+    base_of_data = len(instructions)
+    self._add_allocations(base_of_data, labels, to_allocate)
+
+    compiled = [self._compile(instr, labels) for instr in instructions]
+    program = self._to_text(compiled)
+    return program
+
+def _split(self, lines):
+    try:
+        split = lines.index(self.DIVIDER)
+        return lines[0:split], lines[split + 1:]
+    except ValueError:
+        return lines, []
+#+end_src
+
+Second, we need to figure out where each allocation lies and create a label accordingly:
+
+#+begin_src python
+def _add_allocations(self, base_of_data, labels, to_allocate):
+    for alloc in to_allocate:
+        fields = [a.strip() for a in alloc.split(":")]
+        assert len(fields) == 2, f"Invalid allocation directive '{alloc}'"
+        lbl, num_words_text = fields
+        assert lbl not in labels, f"Duplicate label '{lbl}' in allocation"
+        num_words = int(num_words_text)
+        assert (base_of_data + num_words) < RAM_LEN, \
+            f"Allocation '{lbl}' requires too much memory"
+        labels[lbl] = base_of_data
+        base_of_data += num_words
+#+end_src
+
+And that’s it: no other changes are needed to either compilation or execution. To test it, let’s fill an array with the numbers from 0 to 3:
+
+#+begin_example
+# Count up to 3.
+# - R0: loop index.
+# - R1: loop limit.
+# - R2: array index.
+# - R3: temporary.
+ldc R0 0
+ldc R1 3
+ldc R2 @array
+loop:
+str R0 R2
+ldc R3 1
+add R0 R3
+add R2 R3
+cpy R3 R1
+sub R3 R0
+bne R3 @loop
+hlt
+.data
+array: 10
+#+end_example
+
+#+begin_example
+R000000 = 000003
+R000001 = 000003
+R000002 = 00000e
+R000003 = 000000
+000000:   000002  030102  0b0202  020005
+000004:   010302  030006  030206  010304
+000008:   000307  030309  000001  000000
+00000c:   000001  000002  000000  000000
+#+end_example
+
+* TODO Chapter 26: A Debugger
+:PROPERTIES:
+:ref: https://third-bit.com/sdxpy/debugger/
+:header-args:python: :session ch26 :results output :async yes :eval no
+:header-args:sh: :session ch26-sh :results output :async yes
+:END:
+
+** Summary
+
+** Theory

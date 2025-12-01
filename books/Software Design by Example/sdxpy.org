@@ -10120,7 +10120,7 @@ R000003 = 000000
 00000c:   000001  000002  000000  000000
 #+end_example
 
-* TODO Chapter 26: A Debugger
+* Chapter 26: A Debugger
 :PROPERTIES:
 :ref: https://third-bit.com/sdxpy/debugger/
 :header-args:python: :session ch26 :results output :async yes :eval no
@@ -10128,5 +10128,412 @@ R000003 = 000000
 :END:
 
 ** Summary
+:PROPERTIES:
+:ID:       35fd8868-76bb-4cee-97c2-dcc4d964fb7a
+:END:
+
+- Interactive programs can be tested by simulating input and recording output.
+- Testing interactive programs is easier if their inputs and outputs can easily be replaced with mock objects.
+
+- Debuggers USUALLY _implement breakpoints_ by temporarily replacing actual instructions with special ones.
+- Using lookup tables for function or method dispatch makes programs easier to extend.
+
+We have finally come to another of the questions that sparked this book:
+*Q.* how does a debugger work?
+
+Debuggers are as much a part of good programmers’ lives as version control but are taught far less often (in part, we believe, because it’s harder to create homework questions for them). This chapter builds a simple single-stepping debugger for the virtual machine of [[*Chapter 25: A Virtual Machine][Chapter 25: A Virtual Machine]] and shows how we can test interactive applications.
+
+If you would like to go further and (much) deeper, please have a look at [[https://blog.tartanllama.xyz/][Sy Brand’s]] [[https://blog.tartanllama.xyz/writing-a-linux-debugger-setup/][tutorial]].
+
+#+name: Figure 26.4
+#+caption: Concepts for debugger
+[[file:images/Chapter_26:_A_Debugger/2025-12-01_18-16-59_screenshot.png]]
+
+[[Figure 26.4]] summarizes the key ideas in this chapter.
 
 ** Theory
+*** One step at a time
+:PROPERTIES:
+:ID:       5fe129b2-2c58-4112-88b0-98a354fbfab5
+:END:
+Before we start work, let’s consolidate and reorganize the code in our virtual machine.
+
+The methods all work as they did before, but we’ve made a few changes to allow for future growth. The first is to pass an output stream to the constructor, which by default will be ~sys.stdout~:
+
+#+begin_src python :tangle ./src/ch26/vm_base.py
+def __init__(self, writer=sys.stdout):
+    """Set up memory."""
+    self.writer = writer
+    self.initialize([])
+#+end_src
+
+We then replace every ~print~ statement with a call to new method called ~write~. For example, the “print register” instruction calls ~self.write~:
+
+#+begin_src python :tangle ./src/ch26/vm_base.py
+elif op == OPS["prr"]["code"]:
+    self.assert_is_register(arg0)
+    self.write(f"{self.reg[arg0]:06x}")
+#+end_src
+
+For now, ~write~ just prints things to whatever output stream the virtual machine (VM) was given:
+
+#+begin_src python :tangle ./src/ch26/vm_base.py
+def write(self, *args):
+    msg = "".join(args) + "\n"
+    self.writer.write(msg)
+#+end_src
+
+Our virtual machine now loads a program and runs it to completion, so it’s either running or finished. We want to add a third state for single-step execution, so let’s start by adding an enumeration to architecture.py:
+
+#+begin_src python :tangle ./src/ch26/architecture.py
+class VMState(Enum):
+    """Virtual machine states."""
+    FINISHED = 0
+    STEPPING = 1
+    RUNNING = 2
+#+end_src
+
+We could use strings to keep track of states, but as soon as there are more than two there are likely to be many, and having them spelled out makes it easier for the next person to find out what they can be.
+
+We are now in a better position to move forward, so we derive a new class from our refactored VM:
+
+#+begin_src python :tangle ./src/ch26/vm_step.py
+class VirtualMachineStep(VirtualMachineBase):
+#+end_src
+
+- NOTE :: if we were writing this code under normal circumstances, we would enhance the existing class, but since we want to keep several versions around for teaching, we derive and extend.
+
+The old ~run~ method kept going until the program finished. The new ~run~ method is necessarily more complicated. The VM is initially in the STEPPING state (because if we start it in the RUNNING state, we would never have an opportunity to interact with it to change its state).
+
+As long as the program isn’t finished, we fetch, decode, and execute the next instruction as usual, but we stop after each one if we’re single-stepping:
+
+#+begin_src python :tangle ./src/ch26/vm_step.py
+def run(self):
+    self.state = VMState.STEPPING
+    while True:
+        if self.state == VMState.STEPPING:
+            self.interact(self.ip)
+        if self.state == VMState.FINISHED:
+            break
+        instruction = self.ram[self.ip]
+        self.ip += 1
+        op, arg0, arg1 = self.decode(instruction)
+        self.execute(op, arg0, arg1)
+#+end_src
+
+The interaction method needs to handle several cases:
+
+1. The user enters an empty line (i.e., presses return), in which case it loops around and waits for something else.
+
+2. The user asks to /disassemble/ the current instruction or show the contents of memory, in which case it does that and loops around.
+
+3. The user wants to quit, so interact changes the VM’s state to FINISHED.
+
+4. The user wants to run the rest of the program without stopping, so interact changes VM’s state to RUNNING.
+
+5. The user wants to execute a single step, in which case the method breaks out of the loop without changing the VM’s state. ~run~ will then see that the VM is still in single-stepping mode and will execute a single instruction.
+
+The method that /disassembles/ an instruction to show us what we’re about to do checks a *reverse lookup table* to create a printable representation of an instruction and its operands:
+
+#+begin_src python :tangle ./src/ch26/vm_step.py
+def disassemble(self, addr, instruction):
+    op, arg0, arg1 = self.decode(instruction)
+    assert op in OPS_LOOKUP, f"Unknown op code {op} at {addr}"
+    return f"{OPS_LOOKUP[op]} | {arg0} | {arg1}"
+#+end_src
+
+We build the reverse lookup table from the 'OPS' table in architecture.py so that it’s always in sync with the table we’re using to construct operations ([[Figure 26.1]]):
+
+#+begin_src python :tangle ./src/ch26/vm_step.py
+OPS_LOOKUP = {value["code"]: key for key, value in OPS.items()}
+#+end_src
+
+If we wrote the reverse lookup table ourselves, sooner or later we’d forget to update it when updating the forward lookup table.
+
+#+name: Figure 26.1
+#+caption: Building a consistent lookup table
+[[file:images/Chapter_26:_A_Debugger/2025-12-01_18-27-49_screenshot.png]]
+
+But there’s a more important change in this new virtual machine. It doesn’t use Python’s built-in ~input~ function to get input from the user -- or rather, it does, but only by default. The constructor for our single-stepping VM is:
+
+#+begin_src python :tangle ./src/ch26/vm_step.py
+def __init__(self, reader=input, writer=sys.stdout):
+    super().__init__(writer)
+    self.reader = reader
+#+end_src
+
+and its ~read~ method is:
+
+#+begin_src python :tangle ./src/ch26/vm_step.py
+def read(self, prompt):
+    return self.reader(prompt).strip()
+#+end_src
+
+As with the ~write~ method introduced in the previous section, adding this wrapper method will help us with testing, which is our next topic.
+
+*** Testing
+
+Our debugger is an interactive application that waits for input from the user, does something that may or may not print output, then waits again. The waiting is a problem for tools like [[https://docs.pytest.org/][pytest]], which expect the function being tested to run to completion after being launched.
+
+To make our single-stepping VM testable, we have to give it input when it wants some and capture its output for later inspection. We had a /similar problem/ when testing the web server of [[*Chapter 21: Transferring Files][Chapter 21: Transferring Files]] and the editor of [[*Chapter 24: Undo and Redo][Chapter 24: Undo and Redo]], and our solution is similar: we will replace ~input~ and ~print~ with mock objects.
+
+As shown earlier, our VM uses an object with a write method to produce output. We can define a class which provides this method but saves messages in a list for later inspection instead of printing them:
+
+#+begin_src python :tangle ./src/ch26/test_vm.py
+class Writer:
+    def __init__(self):
+        self.seen = []
+
+    def write(self, *args):
+        self.seen.extend(args)
+#+end_src
+
+Similarly, our VM gets input from a function that takes a prompt as an argument and returns whatever the user typed. We can define a class with a ~__call__~ method which acts like such a function but which returns strings from a list instead of waiting for the user:
+
+#+begin_src python :tangle ./src/ch26/test_vm.py
+class Reader:
+    def __init__(self, *args):
+        self.commands = args
+        self.index = 0
+
+    def __call__(self, prompt):
+        assert self.index < len(self.commands)
+        self.index += 1
+        return self.commands[self.index - 1]
+#+end_src
+
+With these in hand, we can write a helper function that compiles a program, creates a virtual machine, and runs it with a mock reader and a mock writer:
+
+#+begin_src python :tangle ./src/ch26/test_vm.py
+def execute(source, reader, writer):
+    program = Assembler().assemble(source.split("\n"), False)
+    vm = VM(reader, writer)
+    vm.initialize(program)
+    vm.run()
+#+end_src
+
+We can now write tests, like this one for the “disassemble” command:
+
+#+begin_src python :tangle ./src/ch26/test_vm.py
+def test_disassemble():
+    source = """
+    hlt
+    """
+    reader = Reader("d", "q")
+    writer = Writer()
+    execute(source, reader, writer)
+    assert writer.seen == ["hlt | 0 | 0\n"]
+#+end_src
+
+Line by line, it:
+
+1. Creates the program to test (which in this case consists of a single =hlt= instruction).
+
+2. Creates a ~Reader~ that will supply the commands "d" (for “disassemble”) and "q" (for “quit”) in that order.
+
+3. Creates a ~Writer~ to capture the program’s output.
+
+4. Runs the program in a fresh VM with that reader and writer.
+
+5. Checks that the output captured in the writer is correct.
+
+Defining two classes and a helper function to test a one-line program may seem like a lot of work, but we’re not testing the one-line program or the VM -- we’re testing the debugger. For example, below:
+
+1. Defines a multiline string that loads 55 into R0, prints it, and then loads 65 into the same register to print before halting.
+
+2. Creates a ~Reader~ that issues three "s" (single-step) commands and a "q" (quit) command. Note that this isn’t enough to reach the second ~print~ command.
+
+3. Executes the program.
+
+4. Checks that the ~Writer~ has only recorded one line of output, not two.
+
+#+begin_src python :tangle ./src/ch26/test_vm.py
+def test_print_two_values():
+    source = """
+    ldc R0 55
+    prr R0
+    ldc R0 65
+    prr R0
+    hlt
+    """
+    reader = Reader("s", "s", "s", "q")
+    writer = Writer()
+    execute(source, reader, writer)
+    assert writer.seen == [
+        "000037\n"
+    ]
+#+end_src
+
+This test actually uncovered a bug in an earlier version of the debugger in which it would always execute one more instruction when told to quit. Interactive testing might have spotted that, but it could easily reappear; this test will warn us if it does.
+
+Our ~Reader~ and ~Writer~ aren’t good for much beyond testing our VM, but there are other tools that can simulate input and output for a wider range of applications.
+
+- [[https://en.wikipedia.org/wiki/Expect][Expect]] (which can be used through Python’s [[https://pexpect.readthedocs.io/][pexpect]] module) is often used to script command-line applications as well as to test them.
+- Selenium and Cypress do the same for browser-based applications: programmers can use them to simulate mouse clicks, window resizing, and other events, then check the contents of the page that the application produces in response.
+
+They are all more difficult to set up and use than a simple test that 1+1 is 2, but that’s because the things they do are genuinely complex. Designing applications with testing in mind -- for example, routing all input and output through a single method each -- helps reduce that complexity.
+
+*** Extensibility
+
+We are going to add one more big feature to our debugger, but before we do, let’s do some refactoring. First, we move every interactive operation into a method of its own that does something and then returns True if the debugger is supposed to stay in interactive mode and False if interaction is over. The method for showing the contents of memory is:
+
+#+begin_src python :tangle ./src/ch26/vm_extend.py
+def _do_memory(self, addr):
+    self.show()
+    return True
+#+end_src
+
+while the one for advancing one step is:
+
+#+begin_src python :tangle ./src/ch26/vm_extend.py
+def _do_step(self, addr):
+    self.state = VMState.STEPPING
+    return False
+#+end_src
+
+and so on.
+
+Once that’s done, we modify ~interact~ to choose operations from a lookup table called ~self.handlers~. Its keys are the commands typed by the user, and its values are the operation methods we just created:
+
+#+begin_src python :tangle ./src/ch26/vm_extend.py
+def interact(self, addr):
+    prompt = "".join(sorted({key[0] for key in self.handlers}))
+    interacting = True
+    while interacting:
+        try:
+            command = self.read(f"{addr:06x} [{prompt}]> ")
+            if not command:
+                continue
+            elif command not in self.handlers:
+                self.write(f"Unknown command {command}")
+            else:
+                interacting = self.handlers[command](self.ip)
+        except EOFError:
+            self.state = VMState.FINISHED
+            interacting = False
+#+end_src
+
+Finally, we extend the virtual machine’s constructor to build the required lookup table. For convenience, we register the methods under both single-letter keys and longer command names:
+
+#+begin_src python :tangle ./src/ch26/vm_extend.py
+def __init__(self, reader=input, writer=sys.stdout):
+    super().__init__(reader, writer)
+    self.handlers = {
+        "d": self._do_disassemble,
+        "dis": self._do_disassemble,
+        "i": self._do_ip,
+        "ip": self._do_ip,
+        "m": self._do_memory,
+        "memory": self._do_memory,
+        "q": self._do_quit,
+        "quit": self._do_quit,
+        "r": self._do_run,
+        "run": self._do_run,
+        "s": self._do_step,
+        "step": self._do_step,
+    }
+#+end_src
+
+As in previous chapters, creating a lookup table like this makes the class easier to extend. If we want to add another command (which we will do in the next section) we just add a method to perform the operation and register it in the lookup table. So long as new commands don’t need anything more than the address of the current instruction, we never need to modify interact again.
+
+*** Breakpoints
+:PROPERTIES:
+:ID:       6ddf1ba6-82a4-47f2-8c5a-0f5aea0ee275
+:END:
+
+Suppose we suspect there’s a bug in our program that only occurs after several thousand lines of code have been executed. We would have to be pretty desperate to single-step through all of that even once, much less dozens of times as we’re exploring new ideas or trying new fixes. Instead, we want to set a breakpoint to tell the computer to stop at a particular location and drop us into the debugger. We might even use a conditional breakpoint that would only stop if, for example, the variable 'x' was zero at that point.
+
+The easiest way to implement breakpoints would be to have the VM store their addresses in a set. We would then modify run to check that set each time it was supposed to fetch a new instruction, and stop if it was at one of those addresses ([[Figure 26.2]]).
+
+#+name: Figure 26.2
+#+caption: Storing breakpoints beside the program
+[[file:images/Chapter_26:_A_Debugger/2025-12-01_18-59-42_screenshot.png]]
+
+An alternative design is to add a new instruction to our architecture called =brk=. When the user sets a breakpoint at some address, we replace the instruction at that address with a breakpoint instruction and store the original instruction in a lookup table. If the user later clears the breakpoint, we copy the original instruction back into place, and if the VM encounters a breakpoint instruction while it is running, it drops into interactive mode ([[Figure 26.3]]).
+
+#+name: Figure 26.3
+#+caption: Inserting breakpoints into a program
+[[file:images/Chapter_26:_A_Debugger/2025-12-01_19-00-53_screenshot.png]]
+
+Putting breakpoints inline is /more complicated/ than storing them beside the program, BUT it is how debuggers for low-level languages like C actually work. It also makes the virtual machine more efficient: instead of spending a few (actual) instructions checking a breakpoint table every time we execute an instruction, we only pay a price when we actually encounter a breakpoint. The difference isn’t important in our little toy, but little savings like this add up quickly in a real interpreter for a language like Python or JavaScript.
+
+The first step in implementing breakpoints is to add two more commands to the lookup table we created in the previous section:
+
+#+begin_src python :tangle ./src/ch26/vm_break.py
+def __init__(self):
+    super().__init__()
+    self.breaks = {}
+    self.handlers |= {
+        "b": self._do_add_breakpoint,
+        "break": self._do_add_breakpoint,
+        "c": self._do_clear_breakpoint,
+        "clear": self._do_clear_breakpoint,
+    }
+#+end_src
+
+To add a breakpoint, we copy the instruction at the given address into the dictionary ~self.breaks~ and replace it with a breakpoint instruction:
+
+#+begin_src python :tangle ./src/ch26/vm_break.py
+def _do_add_breakpoint(self, addr):
+    if self.ram[addr] == OPS["brk"]["code"]:
+        return True
+    self.breaks[addr] = self.ram[addr]
+    self.ram[addr] = OPS["brk"]["code"]
+    return True
+#+end_src
+
+Notice that if there’s already a breakpoint in place, we don’t do anything. We also return True to tell interact to wait for another command from the user.
+
+Clearing a breakpoint is just as easy:
+
+#+begin_src python :tangle ./src/ch26/vm_break.py
+def _do_clear_breakpoint(self, addr):
+    if self.ram[addr] != OPS["brk"]["code"]:
+        return True
+    self.ram[addr] = self.breaks[addr]
+    del self.breaks[addr]
+    return True
+#+end_src
+
+We also update show to display any breakpoints that have been set:
+
+#+begin_src python :tangle ./src/ch26/vm_break.py
+def show(self):
+    super().show()
+    if self.breaks:
+        self.write("-" * 6)
+        for key, instruction in self.breaks.items():
+            self.write(f"{key:06x}: {self.disassemble(key, instruction)}")
+#+end_src
+
+The implementation first calls the parent’s show method to display what we’ve seen so far before adding more information. Extending methods by upcalling this way saves typing and ensures that changes in the parent class automatically show up in the child class.
+
+The final step is to change run so that the VM actually stops at a breakpoint:
+
+#+begin_src python :tangle ./src/ch26/vm_break.py
+def run(self):
+    self.state = VMState.STEPPING
+    while self.state != VMState.FINISHED:
+        instruction = self.ram[self.ip]
+        op, arg0, arg1 = self.decode(instruction)
+
+        if op == OPS["brk"]["code"]:
+            original = self.breaks[self.ip]
+            op, arg0, arg1 = self.decode(original)
+            self.interact(self.ip)
+            self.ip += 1
+            self.execute(op, arg0, arg1)
+
+        else:
+            if self.state == VMState.STEPPING:
+                self.interact(self.ip)
+            self.ip += 1
+            self.execute(op, arg0, arg1)
+#+end_src
+
+The logic here is relatively straightforward. If the instruction is a breakpoint, the VM uses the original instruction from the breakpoint lookup table, then gives the user a chance to interact before executing that original instruction. Otherwise, the VM interacts with the user if it is in single-stepping mode and then carries on as before.
+
+We can test our new-and-improved VM using the tools developed earlier in this chapter, but even before we do that, the changes to ~run~ tell us that we should rethink some of our design. Using a lookup table for interactive commands allowed us to add commands without modifying ~interact~; another lookup table would enable us to add new instructions without having to modify ~run~.
+
+* Chapter 27: Conclusion
+Read https://third-bit.com/sdxpy/finale/

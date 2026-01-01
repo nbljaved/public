@@ -1,4 +1,2 @@
 #+TITLE: 
 
-- 2026
-  - [[file:2026/test.org][This blog took a year to build]]

@@ -1,0 +1,19 @@
+#+TITLE: This blog took a year to build
+#+DATE: 2025-11-18
+#+OPTIONS: toc:nil num:nil html-style:nil
+
+* ok
+
+See:
+  - https://orgmode.org/manual/Publishing.html
+  - https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site#publishing-from-a-branch
+  - https://systemcrafters.net/publishing-websites-with-org-mode/building-the-site/
+  - https://taingram.org/blog/org-mode-blog.html
+  - https://git.sr.ht/~taingram/taingram.org/tree/master/item/publish.el
+
+** whete
+  I want to create a new folder for my blog (nbljaved.com served from the 'main' branch) in the current repo.
+  The filesystem layout should be like in the taingram blog.
+  Org source code blocks should be fontified.
+  CSS stylesheet being used should be the one in
+  https://github.com/kevquirk/simple.css/wiki/Getting-Started-With-Simple.css

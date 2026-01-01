@@ -1,0 +1,24 @@
+/* https://simplecss.org/demo */
+/* https://github.com/kevquirk/simple.css/blob/main/simple.css */
+/* https://github.com/kevquirk/simple.css/issues/206 */
+html, body {
+	height: 100%;
+}
+body {
+	grid-template-rows: min-content 1fr auto;
+}
+/* Optional: Make footer padding consistent */
+body > footer {
+	padding: 1rem 1rem;
+}
+
+/* Reduce header padding */
+body > header {
+  padding: 0 0.5rem 0.5rem 0.5rem !important;
+}
+
+/* Reduce nav padding */
+header nav {
+  padding: 0.25rem 0 0 0 !important;
+}
+

@@ -3,4 +3,8 @@
 #+AUTHOR: Nabeel Javed
 #+OPTIONS: toc:nil num:nil html-style:nil
 
-Hi, I am Nabeel a software engineer.
+Hi, I am a software engineer.
+
+- Github https://github.com/nbljaved
+- LinkedIn https://linkedin.com/in/nbljaved
+- Website [fn:: I link to whatever I want, this is my corner of the internet. Here people can recurse without fear of any aspersions being cast on their character !] https://nbljaved.com/about

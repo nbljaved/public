@@ -1,0 +1,16 @@
+
+* CSS
+
+Basically relying on https://github.com/kevquirk/simple.css
+
+#+caption: Download the css
+#+begin_src sh
+curl -o ./html/static/css/simple.css https://raw.githubusercontent.com/kevquirk/simple.css/refs/heads/main/simple.css
+#+end_src
+
+Also see https://orgmode.org/manual/CSS-support.html
+
+* Web analytics
+
+I am relying on cloudflare.
+Visit https://dash.cloudflare.com -> Analytics -> Web analytics

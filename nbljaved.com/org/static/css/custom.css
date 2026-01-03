@@ -22,3 +22,102 @@ header nav {
   padding: 0.25rem 0 0 0 !important;
 }
 
+/* Muted footnotes styling */
+div#footnotes {
+  margin-top: 4rem;
+  padding: 1rem;
+  border-top: 2px solid var(--accent-bg);
+  font-size: 1rem;
+  color: var(--text-light);
+}
+
+h2.footnotes {
+  font-size: 1.1rem !important;
+  /* font-weight: normal; */
+  /* color: var(--text-light); */
+  margin-top: 0;
+  margin-bottom: 1.0rem;
+  opacity: 0.9;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+div#text-footnotes {
+  margin-top: 0.5rem;
+}
+
+div.footdef {
+  margin: 0.4rem 0;
+  line-height: 1.4;
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+div.footdef sup {
+  vertical-align: baseline;
+}
+
+p.footpara {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.footref, .footnum {
+  font-size: 0.8em;
+  vertical-align: super;
+  color: var(--text-light);
+  /* text-decoration: none; */
+  font-weight: normal;
+  opacity: 0.9;
+}
+
+.footref:hover, .footnum:hover {
+  color: var(--accent);
+  opacity: 1;
+}
+
+/* Smaller headings (~35% reduction) */
+h1 {
+  font-size: 2rem !important;
+}
+
+h2 {
+  font-size: 1.7rem !important;
+}
+
+h3 {
+  font-size: 1.3rem !important;
+}
+
+h4 {
+  font-size: 0.95rem !important;
+}
+
+h5 {
+  font-size: 0.75rem !important;
+}
+
+h6 {
+  font-size: 0.62rem !important;
+}
+
+/* Smaller headings on mobile */
+@media only screen and (max-width: 720px) {
+  h1 {
+    font-size: 1.6rem !important;
+  }
+
+  h2 {
+    font-size: 1.4rem !important;
+  }
+
+  h3 {
+    font-size: 1.1rem !important;
+  }
+
+  h4 {
+    font-size: 0.8rem !important;
+  }
+}
+

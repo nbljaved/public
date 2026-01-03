@@ -13,7 +13,7 @@
       org-html-head-include-scripts nil       ;; we will set our own
       org-html-head-include-default-style nil ;; we will set our own
       ;; https://github.com/kevquirk/simple.css/wiki/Getting-Started-With-Simple.css
-      org-html-head (concat "<link rel=\"stylesheet\" href=\"https://cdn.simplecss.org/simple.min.css\" />"
+      org-html-head (concat "<link rel=\"stylesheet\" href=\"/static/css/simple.css\" />"
                             "\n"
                             "<link rel=\"stylesheet\" href=\"/static/css/custom.css\" />")
       ;;
@@ -65,6 +65,9 @@
     <a href=\"https://orgmode.org/\">
       <img src=\"/static/img/Org-mode-unicorn.svg\" style=\"height:1.2em;position:relative;top:0.25em\">
     </a>
+    <!-- Cloudflare Web Analytics -->
+    <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{\"token\": \"21afbb500f704e30849cbe64ad813cf1\"}'></script>
+    <!-- End Cloudflare Web Analytics -->
   "
   ;; "hi"
   )

@@ -22,3 +22,9 @@ Visit https://dash.cloudflare.com -> Analytics -> Web analytics
 * TODO
 
 Maybe use https://github.com/gnat/surreal ?
+
+* References
+
+- https://orgmode.org/manual/Publishing.html
+- https://taingram.org/blog/org-mode-blog.html
+- https://systemcrafters.net/publishing-websites-with-org-mode/building-the-site/

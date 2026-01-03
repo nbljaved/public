@@ -1,13 +1,11 @@
 ;;; publish.el --- Blog publishing configuration for nbljaved.com
 
-;; Reference websites:
-;; https://taingram.org/blog/org-mode-blog.html
-;; https://systemcrafters.net/publishing-websites-with-org-mode/building-the-site/
-
 (require 'ox-publish)
 (require 'ox-html)
 
-;; TODO: HTML link home, HTML link up, HTML container,
+;; TODO: rss/atom link
+;; TODO: tags
+;; TODO: Make sure that code blocks are appropriately colored
 
 (setq org-html-validation-link nil
       org-html-head-include-scripts nil       ;; we will set our own
@@ -31,21 +29,58 @@
       ;; org-html-html5-elements). For example, ‘#+BEGIN_lederhosen’ exports to
       ;; <div class="lederhosen">.
       ;;
+      ;; https://www.gnu.org/software/emacs/manual/html_node/org/HTML-Export.html
+      ;; https://www.gnu.org/software/emacs/manual/html_node/org/Quoting-HTML-tags.html
+      ;;
+      ;; Also see Macro replacement: https://orgmode.org/manual/Macro-Replacement.html
+      ;;
       org-html-doctype "html5"
       org-html-html5-fancy t
       org-html-self-link-headlines nil)
 
-(defun org-blog-sitemap-format-entry (entry style project)
-  "Format sitemap entries for blog posts."
-  (format "[[file:%s][%s]]\n%s\n"
-          entry
-          (org-publish-find-title entry project)
-          (format-time-string "%Y-%m-%d" (org-publish-find-date entry project))))
+(defun org-blog-timestamp (arg1)
+  (concat "@@html:<div class=\"timestamp2\">@@"
+          ;;
+          "@@html:<div>@@"
+          "{{{date(%B %d\\, %Y)}}}"
+          "@@html:</div>@@"
+          "@@html:<i>@@"
+          (when (and arg1 (not (string-empty-p arg1)))
+            (concat "@@html:<div>@@"
+                    "Last updated: "
+                    arg1
+                    "@@html:</div>@@"))
+          "@@html:</i>@@"
+          ;;
+          "@@html:</div>@@"))
 
-(defun org-blog-sitemap-function (title list)
-  "Generate sitemap for blog posts."
-  (concat "#+TITLE: Blog\n\n"
-          (mapconcat 'identity list "\n")))
+(org-blog-timestamp "")
+(setq org-export-global-macros
+      '(("timestamp" . "@@html:<span class=\"timestamp\">$1</span>@@")
+        ("published" . "(eval (org-blog-timestamp $1))")
+        ))
+
+(defun org-blog-sitemap-format-entry (entry style project)
+  "Format sitemap entries for blog posts.
+   We modified org-publish-sitemap-default-entry
+
+   Default format for site map ENTRY, as a string.
+   ENTRY is a file name.  STYLE is the style of the sitemap.
+   PROJECT is the current project."
+  (cond ((not (directory-name-p entry))
+         (format "{{{timestamp(%s)}}} [[file:%s][%s]]"
+                 (format-time-string "%Y %b %d" (org-publish-find-date entry project))
+                 entry
+                 (org-publish-find-title entry project)))
+	((eq style 'tree)
+	 ;; Return only last subdir.
+	 (file-name-nondirectory (directory-file-name entry)))
+	(t entry)))
+
+;; (defun org-blog-sitemap-function (title list)
+;;   "Generate sitemap for blog posts."
+;;   (concat "#+TITLE: Blog\n\n"
+;;           (mapconcat 'identity list "\n")))
 
 (defun nbljaved.com/header ()
   "
@@ -89,16 +124,17 @@
          :headline-levels 4
          :html-preamble ,(nbljaved.com/header)
          :html-postamble ,(nbljaved.com/footer)
-         :with-toc t
-         :section-numbers nil
+         :with-toc nil
+         :section-numbers t
          :with-author nil             ; Don't include author name
          :with-creator t              ; Include Emacs and Org versions in footer
          :time-stamp-file nil         ; Don't include time stamp in file
          :auto-sitemap t
          :sitemap-filename "index.org"
          :sitemap-title "" ;; "Blog Posts"
+         :sitemap-style list            ;; defaults to - tree, can set to - list
          :sitemap-sort-files anti-chronologically
-         ;; :sitemap-format-entry org-blog-sitemap-format-entry
+         :sitemap-format-entry org-blog-sitemap-format-entry
          :recursive t)
         ("pages"
          :base-directory ,(expand-file-name "org" (file-name-directory (or load-file-name buffer-file-name)))

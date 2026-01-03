@@ -65,6 +65,11 @@
     <a href=\"https://orgmode.org/\">
       <img src=\"/static/img/Org-mode-unicorn.svg\" style=\"height:1.2em;position:relative;top:0.25em\">
     </a>
+    <div class=\"source-link\">
+    <a href=\"https://github.com/nbljaved/public/tree/main/nbljaved.com\">
+    Source code for this site
+    </a>
+    </div>
     <!-- Cloudflare Web Analytics -->
     <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{\"token\": \"21afbb500f704e30849cbe64ad813cf1\"}'></script>
     <!-- End Cloudflare Web Analytics -->

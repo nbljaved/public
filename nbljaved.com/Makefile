@@ -7,12 +7,12 @@ SOURCE_DIR = org
 OUTPUT_DIR = html
 
 # Default target
-.PHONY: all clean publish help
+.PHONY: all clean build help
 
-all: publish
+all: rebuild
 
 # Build the site
-publish:
+build:
 	@echo "Building the blog..."
 	$(EMACS) --batch --load $(PUBLISH_FILE) --eval "(org-publish-all t)"
 	@echo "Blog built successfully in $(OUTPUT_DIR)/"
@@ -24,10 +24,10 @@ clean:
 	@echo "Clean complete."
 
 # Rebuild from scratch
-rebuild: clean publish
+rebuild: clean build
 
 # Start local server (if you have a simple HTTP server)
-serve: publish
+serve: build
 	@echo "Starting local server on http://localhost:8000"
 	cd $(OUTPUT_DIR) && python3 -m http.server 8000
 
@@ -35,7 +35,7 @@ serve: publish
 help:
 	@echo "Available targets:"
 	@echo "  all     - Build the site (default)"
-	@echo "  publish - Build the site using org-publish"
+	@echo "  build   - Build the site using org-publish"
 	@echo "  clean   - Remove generated files"
 	@echo "  rebuild - Clean and rebuild"
 	@echo "  serve   - Build and start local server"

@@ -22,6 +22,16 @@ header nav {
   padding: 0.25rem 0 0 0 !important;
 }
 
+/* Muted source link */
+.source-link {
+  font-size: 0.8rem;
+}
+
+.source-link a {
+  color: var(--text-light);
+  opacity: 0.8;
+}
+
 /* Muted footnotes styling */
 div#footnotes {
   margin-top: 4rem;

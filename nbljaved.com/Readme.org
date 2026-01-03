@@ -1,4 +1,8 @@
 
+This static blog is a set of Org mode files that are published to HTML using Emacs' ~org-publish-all~ function.
+
+See the Makefile -- to build the website, run =make= in this directory
+
 * CSS
 
 Basically relying on https://github.com/kevquirk/simple.css
@@ -14,3 +18,7 @@ Also see https://orgmode.org/manual/CSS-support.html
 
 I am relying on cloudflare.
 Visit https://dash.cloudflare.com -> Analytics -> Web analytics
+
+* TODO
+
+Maybe use https://github.com/gnat/surreal ?

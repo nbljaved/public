@@ -17,6 +17,11 @@
     --preformatted: #444;
     --marked: #ffdd33;
     --disabled: #efefef;
+    /* Remove transparency so light media isn't so glaring in dark mode */
+    img,
+    video {
+        opacity: 1.0;
+    }
   }
 }
 

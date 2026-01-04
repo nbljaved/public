@@ -30,10 +30,13 @@
 
 ;; Install dependencies
 (use-package htmlize
-  :pin "elpa"
+  :pin elpa
   :custom
   ;; see Readme.org in this folder about code highlighting
   (org-html-htmlize-output-type 'css))
+
+(use-package webfeeder
+  :pin elpa)
 
 ;; https://github.com/tali713/esxml
 (use-package esxml)
@@ -50,9 +53,8 @@
                                            (href . "/static/css/simple.css"))))
                      (esxml-to-xml `(link ((rel . "stylesheet")
                                            (href . "/static/css/custom.css"))))
-                     ;; (esxml-to-xml `(link ((rel . "stylesheet")
-                     ;;                       (href . "/static/css/highlight.css"))))
-                     )
+                     (esxml-to-xml `(link ((rel . "stylesheet")
+                                           (href . "/static/css/highlight.css")))))
       org-html-divs '((preamble "header" "preamble")
                       (content "main" "content")
                       (postamble "footer" "postamble"))

@@ -3,7 +3,6 @@
 ;; TODO: rss/atom link
 ;; TODO: tags
 ;; TODO: Which books I have read in my about section.
-;; TODO: How do I store my images etc. (for a single blog)
 ;; TODO: favicon
 
 
@@ -11,8 +10,8 @@
 ;; ~/.emacs.d/elpa path.
 (require 'package)
 (setq package-user-dir (expand-file-name "./.packages"))
-(setq package-archives '(("melpa" . "https://melpa.org/packages/")
-                         ("elpa" . "https://elpa.gnu.org/packages/")))
+(setq package-archives '(("elpa" . "https://elpa.gnu.org/packages/")
+                         ("melpa" . "https://melpa.org/packages/")))
 
 ;; Initialize the package system
 (package-initialize)
@@ -31,6 +30,7 @@
 
 ;; Install dependencies
 (use-package htmlize
+  :pin "elpa"
   :custom
   ;; see Readme.org in this folder about code highlighting
   (org-html-htmlize-output-type 'css))
@@ -155,7 +155,7 @@ it displays 'Last updated: ARG1' below the publication date."
 
 (setq org-publish-project-alist
       `(("nbljaved"
-         :components ("blog" "static" "pages"))
+         :components ("blog" "blog-static" "static" "pages"))
         ("blog"
          :base-directory ,(expand-file-name "org/blog" (file-name-directory (or load-file-name buffer-file-name)))
          :base-extension "org"
@@ -176,6 +176,12 @@ it displays 'Last updated: ARG1' below the publication date."
          :sitemap-style list            ;; defaults to - tree, can set to - list
          :sitemap-sort-files anti-chronologically
          :sitemap-format-entry org-blog-sitemap-format-entry
+         :recursive t)
+        ("blog-static"
+         :base-directory ,(expand-file-name "org/blog" (file-name-directory (or load-file-name buffer-file-name)))
+         :base-extension "css\\|js\\|svg\\|png\\|jpg\\|gif\\|pdf\\|mp3\\|ogg\\|swf\\|txt"
+         :publishing-directory ,(expand-file-name "html/blog" (file-name-directory (or load-file-name buffer-file-name)))
+         :publishing-function org-publish-attachment
          :recursive t)
         ("pages"
          :base-directory ,(expand-file-name "org" (file-name-directory (or load-file-name buffer-file-name)))

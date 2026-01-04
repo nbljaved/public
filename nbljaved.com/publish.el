@@ -1,20 +1,58 @@
 ;;; publish.el --- Blog publishing configuration for nbljaved.com
 
+;; TODO: rss/atom link
+;; TODO: tags
+;; TODO: Which books I have read in my about section.
+;; TODO: How do I store my images etc. (for a single blog)
+;; TODO: favicon
+
+
+;; Set the package installation directory so that packages aren't stored in the
+;; ~/.emacs.d/elpa path.
+(require 'package)
+(setq package-user-dir (expand-file-name "./.packages"))
+(setq package-archives '(("melpa" . "https://melpa.org/packages/")
+                         ("elpa" . "https://elpa.gnu.org/packages/")))
+
+;; Initialize the package system
+(package-initialize)
+(unless package-archive-contents
+  (package-refresh-contents))
+
+;; Install use-package
+(unless (package-installed-p 'use-package)
+  (package-install 'use-package))
+(require 'use-package)
+(require 'use-package-ensure)
+(setq use-package-always-ensure t)
+
 (require 'ox-publish)
 (require 'ox-html)
 
-;; TODO: rss/atom link
-;; TODO: tags
-;; TODO: Make sure that code blocks are appropriately colored
+;; Install dependencies
+(use-package htmlize
+  :custom
+  ;; see Readme.org in this folder about code highlighting
+  (org-html-htmlize-output-type 'css))
+
+;; https://github.com/tali713/esxml
+(use-package esxml)
+(require 'esxml)
 
 (setq org-html-validation-link nil
       org-html-head-include-scripts nil       ;; we will set our own
       org-html-head-include-default-style nil ;; we will set our own
       ;; https://github.com/kevquirk/simple.css/wiki/Getting-Started-With-Simple.css
-      org-html-head (concat "<link rel=\"stylesheet\" href=\"/static/css/simple.css\" />"
-                            "\n"
-                            "<link rel=\"stylesheet\" href=\"/static/css/custom.css\" />")
-      ;;
+      org-html-head (concat
+                     ;; Cannot wrap this in a div, as that would put these links inside the 'body'
+                     ;; instead of the 'head'.
+                     (esxml-to-xml `(link ((rel . "stylesheet")
+                                           (href . "/static/css/simple.css"))))
+                     (esxml-to-xml `(link ((rel . "stylesheet")
+                                           (href . "/static/css/custom.css"))))
+                     ;; (esxml-to-xml `(link ((rel . "stylesheet")
+                     ;;                       (href . "/static/css/highlight.css"))))
+                     )
       org-html-divs '((preamble "header" "preamble")
                       (content "main" "content")
                       (postamble "footer" "postamble"))
@@ -39,6 +77,9 @@
       org-html-self-link-headlines nil)
 
 (defun org-blog-timestamp (arg1)
+  "Generate HTML timestamp div for blog posts.
+ARG1 is an optional last-updated date string. When provided and non-empty,
+it displays 'Last updated: ARG1' below the publication date."
   (concat "@@html:<div class=\"timestamp2\">@@"
           ;;
           "@@html:<div>@@"
@@ -83,34 +124,34 @@
 ;;           (mapconcat 'identity list "\n")))
 
 (defun nbljaved.com/header ()
-  "
-  <h1>Nabeel Javed</h1>
-  <nav>
-  <a href=\"/\">Blog</a>
-  <a href=\"/about.html\">About</a>
-  </nav>
-  ")
+  (esxml-to-xml
+   `(div ()
+         (h1 () "Nabeel Javed")
+         (nav ()
+              (a ((href . "/")) "Blog")
+              (a ((href . "/about.html")) "About")))))
 
 (defun nbljaved.com/footer ()
-  "
-  Created with
-    <a href=\"https://www.gnu.org/software/emacs/\">
-      <img src=\"/static/img/EmacsIcon.svg\" style=\"height:1.2em;position:relative;top:0.25em\"></a>
-    and
-    <a href=\"https://orgmode.org/\">
-      <img src=\"/static/img/Org-mode-unicorn.svg\" style=\"height:1.2em;position:relative;top:0.25em\">
-    </a>
-    <div class=\"source-link\">
-    <a href=\"https://github.com/nbljaved/public/tree/main/nbljaved.com\">
-    Source code for this site
-    </a>
-    </div>
-    <!-- Cloudflare Web Analytics -->
-    <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{\"token\": \"21afbb500f704e30849cbe64ad813cf1\"}'></script>
-    <!-- End Cloudflare Web Analytics -->
-  "
-  ;; "hi"
-  )
+  (concat
+   (esxml-to-xml
+    `(div ()
+          "Created with "
+          (a ((href . "https://www.gnu.org/software/emacs/"))
+             (img ((src . "/static/img/EmacsIcon.svg")
+                   (style . "height:1.2em;position:relative;top:0.25em"))))
+          " and "
+          (a ((href . "https://orgmode.org/"))
+             (img ((src . "/static/img/Org-mode-unicorn.svg")
+                   (style . "height:1.2em;position:relative;top:0.25em"))))
+          (div ((class . "source-link"))
+               (a ((href . "https://github.com/nbljaved/public/tree/main/nbljaved.com"))
+                  "Source code for this site"))
+          (comment () "Cloudflare Web Analytics")
+          (script ((defer . "") ;  <script defer=""> is the same as <script defer>
+                   (src . "https://static.cloudflareinsights.com/beacon.min.js")
+                   (data-cd-beacon . "{\"token\": \"21afbb500f704e30849cbe64ad813cf1\"}"))
+                  "")
+          (comment () "End Cloudflare Web Analytics")))))
 
 (setq org-publish-project-alist
       `(("nbljaved"

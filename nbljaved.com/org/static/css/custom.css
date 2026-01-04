@@ -1,6 +1,36 @@
 /* https://simplecss.org/demo */
 /* https://github.com/kevquirk/simple.css/blob/main/simple.css */
+
+/* To use light mode only */
+/* https://github.com/kevquirk/simple.css/wiki/Getting-Started-With-Simple.css#use-dark-or-light-mode-only */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: light;
+    --bg: #fff;
+    --accent-bg: #f5f7ff;
+    --text: #212121;
+    --text-light: #585858;
+    --accent: #0d47a1;
+    --accent-hover: #1266e2;
+    --accent-text: var(--bg);
+    --code: #d81b60;
+    --preformatted: #444;
+    --marked: #ffdd33;
+    --disabled: #efefef;
+  }
+}
+
+/* START: Sticky footer */
+/*  */
 /* https://github.com/kevquirk/simple.css/issues/206 */
+/* The body must look like this : */
+/*  */
+/* <body> */
+/* 	<header>...</header> */
+/* 	<main>...</main> */
+/* 	<footer>...</footer> */
+/* </body> */
+/*  */
 html, body {
 	height: 100%;
 }
@@ -11,6 +41,8 @@ body {
 body > footer {
 	padding: 1rem 1rem;
 }
+/*  */
+/* END: Sticky footer */
 
 /* Reduce header padding */
 body > header {
@@ -45,6 +77,10 @@ header nav {
   gap: 0.75rem;
 }
 
+.blog-entries a {
+    text-decoration: none;
+}
+
 .timestamp {
   font-size: 0.90rem;
   color: var(--text-light);
@@ -59,6 +95,16 @@ header nav {
   white-space: nowrap;
   margin-top: -1rem;
   margin-bottom: 0.5rem;
+}
+
+/* Match code block size to body text */
+pre, code {
+  font-size: 0.97rem !important;
+}
+
+/* Let htmlize colors show through instead of simple.css overriding */
+pre, code {
+  color: unset !important;
 }
 
 /* Link underline on hover */

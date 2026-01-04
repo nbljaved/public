@@ -4,7 +4,7 @@ This static blog is a set of Org mode files that are published to HTML using Ema
 See the Makefile -- to build the website, run =make= in this directory
 
 * CSS
-
+** simple.css
 Basically relying on https://github.com/kevquirk/simple.css
 
 #+caption: Download the css
@@ -13,6 +13,25 @@ curl -o ./html/static/css/simple.css https://raw.githubusercontent.com/kevquirk/
 #+end_src
 
 Also see https://orgmode.org/manual/CSS-support.html
+
+[[file:org/static/css/custom.css]] extends [[file:org/static/css/simple.css]]
+
+** Code highlighting
+See [[file:org/static/css/highlight.css]], generated using =M-x org-html-htmlize-generate-css= (when I am in light theme mode)
+
+- NOTE :: Comment out the following:
+
+  #+begin_example
+  a {
+      color: inherit;
+      background-color: inherit;
+      font: inherit;
+      text-decoration: inherit;
+  }
+  a:hover {
+      text-decoration: underline;
+  }
+  #+end_example
 
 * Web analytics
 
@@ -28,3 +47,4 @@ Maybe use https://github.com/gnat/surreal ?
 - https://orgmode.org/manual/Publishing.html
 - https://taingram.org/blog/org-mode-blog.html
 - https://systemcrafters.net/publishing-websites-with-org-mode/building-the-site/
+- https://codeberg.org/SystemCrafters/systemcrafters-site/src/branch/master/publish.el (something to look into later)

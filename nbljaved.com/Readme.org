@@ -38,7 +38,7 @@ See [[file:org/static/css/highlight.css]], generated using =M-x org-html-htmlize
 I am relying on cloudflare.
 Visit https://dash.cloudflare.com -> Analytics -> Web analytics
 
-See the snippet I add in the footer in [[file:publish.el::src . "https://static.cloudflareinsights.com/beacon.min.js"]]
+See the snippet I add in the footer in [[file:publish.el]]
 
 * TODO
 

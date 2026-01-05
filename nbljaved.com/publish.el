@@ -1,6 +1,5 @@
 ;;; publish.el --- Blog publishing configuration for nbljaved.com
 
-;; TODO: rss/atom link
 ;; TODO: tags
 ;; TODO: Which books I have read in my about section.
 ;; TODO: favicon
@@ -83,6 +82,9 @@
 ARG1 is an optional last-updated date string. When provided and non-empty,
 it displays 'Last updated: ARG1' below the publication date."
   (concat "@@html:<div class=\"timestamp2\">@@"
+          "@@html:<div hidden class=\"published\">@@"
+          "{{{date(%Y-%m-%d)}}}"
+          "@@html:</div>@@"
           ;;
           "@@html:<div>@@"
           "{{{date(%B %d\\, %Y)}}}"
@@ -120,10 +122,17 @@ it displays 'Last updated: ARG1' below the publication date."
 	 (file-name-nondirectory (directory-file-name entry)))
 	(t entry)))
 
-;; (defun org-blog-sitemap-function (title list)
-;;   "Generate sitemap for blog posts."
-;;   (concat "#+TITLE: Blog\n\n"
-;;           (mapconcat 'identity list "\n")))
+(defun org-blog-sitemap-function (title list)
+  "Generate sitemap for blog posts."
+  (concat "#+TITLE: " title "\n\n"
+          (format "#+begin_export html\n\n%s \n \n#+end_export \n\n"
+                  (esxml-to-xml
+                   `(div ((class . "atom-feed"))
+                         (a ((href . "/blog/atom.xml"))
+                            "Atom Feed "
+                            (img ((src . "/static/img/feed-icon.svg")
+                                  (class . "feed-icon")))))))
+          (org-list-to-org list)))
 
 (defun nbljaved.com/header ()
   (esxml-to-xml
@@ -174,10 +183,11 @@ it displays 'Last updated: ARG1' below the publication date."
          :time-stamp-file nil         ; Don't include time stamp in file
          :auto-sitemap t
          :sitemap-filename "index.org"
-         :sitemap-title "" ;; "Blog Posts"
-         :sitemap-style list            ;; defaults to - tree, can set to - list
+         :sitemap-title ""   ;; "Blog Posts"
+         :sitemap-style list ; defaults to - tree, can set to - list
          :sitemap-sort-files anti-chronologically
          :sitemap-format-entry org-blog-sitemap-format-entry
+         :sitemap-function org-blog-sitemap-function
          :recursive t)
         ("blog-static"
          :base-directory ,(expand-file-name "org/blog" (file-name-directory (or load-file-name buffer-file-name)))
@@ -206,6 +216,62 @@ it displays 'Last updated: ARG1' below the publication date."
          :publishing-directory ,(expand-file-name "html/static" (file-name-directory (or load-file-name buffer-file-name)))
          :publishing-function org-publish-attachment
          :recursive t)))
+
+(defun atom-extract-title (html-file)
+  "Extract the title from an HTML file."
+  (with-temp-buffer
+    (insert-file-contents html-file)
+    (let* ((dom (libxml-parse-html-region (point-min) (point-max)))
+           (title (dom-text (car (dom-by-class dom "title")))))
+      (if (or (not title) (string= "" title))
+          (error (format "Title doesn't exist in filename: %s" html-file))
+        title))))
+
+(defun atom-extract-date (html-file)
+  "Extract the date from an HTML file."
+  (with-temp-buffer
+    (insert-file-contents html-file)
+    (let* ((dom (libxml-parse-html-region (point-min) (point-max)))
+           (date (dom-text (car (dom-by-class dom "published")))))
+
+      (if (or (not date) (string= "" date))
+          (error (format "Date doesn't exist in filename: %s" html-file))
+        (let* ((parsed-date (parse-time-string date))
+               (day (nth 3 parsed-date))
+               (month (nth 4 parsed-date))
+               (year (nth 5 parsed-date)))
+          ;; NOTE: Hardcoding this at 8am for now
+          (encode-time 0 0 8 day month year))))))
+
+;; https://gitlab.com/ambrevar/emacs-webfeeder
+(defun nbljaved.com/generate-feed ()
+  "Generate Atom feed from published blog posts."
+  (let* ((base-dir (expand-file-name "html" (file-name-directory (or load-file-name buffer-file-name))))
+         (blog-dir (expand-file-name "blog" base-dir))
+         (posts-dir (expand-file-name "posts" blog-dir))
+         (feed-file (expand-file-name "atom.xml" blog-dir))
+         (blog-url "https://nbljaved.com/")
+         (html-files (directory-files posts-dir t "\\.html$")))
+    (let ((webfeeder-title-function #'atom-extract-title)
+          (webfeeder-date-function #'atom-extract-date))
+      (webfeeder-build
+       feed-file
+       blog-dir
+       blog-url
+       html-files
+       :title "Nabeel Javed's Blog"
+       :description "Nabeel's blog posts feed in Atom"
+       :author "Nabeel Javed"
+       :max-entries 20))))
+
+(defun nbljaved.com/publish ()
+  "Publish the entire site"
+  (org-publish-all t)
+  (message "Generating feed...")
+  (nbljaved.com/generate-feed)
+  (message "Feed successfully generated"))
+
+(nbljaved.com/publish)
 
 (provide 'publish)
 

@@ -12,6 +12,7 @@
 auto-save-list
 tramp
 .\#*
+/.packages/
 
 # Org-mode temporary files
 *.org_archive

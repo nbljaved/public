@@ -201,6 +201,21 @@ h6 {
   font-size: 0.62rem !important;
 }
 
+/* Atom feed link container */
+.atom-feed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  opacity: 0.90;
+}
+
+.atom-feed img.feed-icon {
+  height: 1em;
+  position: relative;
+  top: 0.10em;
+}
+
 /* Smaller headings on mobile */
 @media only screen and (max-width: 720px) {
   h1 {

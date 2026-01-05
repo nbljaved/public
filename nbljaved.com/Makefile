@@ -14,7 +14,7 @@ all: rebuild
 # Build the site
 build:
 	@echo "Building the blog..."
-	$(EMACS) -Q --quick --batch --load $(PUBLISH_FILE) --eval "(org-publish-all t)"
+	$(EMACS) -Q --batch --script $(PUBLISH_FILE) #--eval "(nbljaved.com/publish)"
 	@echo "Blog built successfully in $(OUTPUT_DIR)/"
 
 # Clean generated files

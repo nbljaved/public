@@ -4,6 +4,7 @@
 ;; TODO: Which books I have read in my about section.
 ;; TODO: Fix constantly changing org ids in exported headings
 
+
 ;; Set the package installation directory so that packages aren't stored in the
 ;; ~/.emacs.d/elpa path.
 (require 'package)

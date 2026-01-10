@@ -1,0 +1,158 @@
+#+TITLE: Getting shot-scraper to run in Guix
+#+DATE: [2026-01-10 Sat]
+#+OPTIONS: toc:nil num:nil
+#+AUTHOR: Nabeel Javed
+{{{published}}}
+
+# Installing shot scraper on Guix.
+# Pip, uv, nix, all fail.
+# Dockerfile works, but alias doesn't run in claude code, so add a file that runs the bash script to the path.
+
+I wanted to give my Claude the 'skill' to screenshot webpages, so that it could help me with UI design. So, I decided to try out the [[https://shot-scraper.datasette.io/][shot-scraper]] CLI.
+
+** getting it to run
+
+Now, the installations instructions provided on the webpage are simple enough, ~pip install shot-scraper~.
+
+#+begin_src sh
+python3 -m pip install --user shot-scraper
+#+end_src
+
+The above command succeeds, but the following one fails:
+
+#+begin_src sh :exports both :eval no
+shot-scraper google.com
+#+end_src
+
+#+RESULTS:
+#+begin_example
+...
+...
+FileNotFoundError: [Errno 2] No such file or directory: '/home/nabeel/.local/lib/python3.11/site-packages/playwright/driver/node'
+#+end_example
+
+As a user of Guix you need to pay the [[https://en.wikipedia.org/wiki/Filesystem_Hierarchy_Standard][FHS]] tax (read [[https://guix.gnu.org/en/blog/2023/the-filesystem-hierarchy-standard-comes-to-guix-containers/][this]] article by the Guix team) whose conventions reproducible systems like Guix/Nix don't follow[fn:: we are cool like that].
+
+This is a pothole that trips over many new (and old !) Guix users who then make the sensible decision of washing their hands off the Python ecosystem and switch over to Go land, where programs are static binaries and you can /just get to work/.
+
+There is an excellent article written about [[https://zie87.github.io/posts/guix-foreign-binaries/][Running foreing binaries in Guix]].
+
+In this particular situation, us wanting to run =shot-scraper=, we face problems because =shot-scraper= uses playwright which in turn assumes FHS on Linux systems. So the problem is one level deeper and not about /fixing/ the =shot-scraper= executable.
+Therefore, trying it out with =pip=, =uv=[fn:: using the uv binary in Guix runs into the same FHS problem, so these days I install =uv= from Nix ], or installing Nix's shot-scraper package all fail !
+
+The solution is simple.
+
+Docker-isation (or [[https://guix.gnu.org/manual/devel/en/guix.html#index-Rootless-Podman][Podman-isation]] as the [[https://packages.guix.gnu.org/packages/docker/20.10.27/][docker package]] on guix as of this writing is version 20.10, which is proper old), because we need /state/, i.e. a properly configured playwright.
+
+The following Dockerfile works for me:
+
+#+begin_src dockerfile
+FROM python:3.11-slim
+
+# Install system dependencies for Playwright
+RUN apt-get update && apt-get install -y \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libexpat1 \
+    libgbm1 \
+    libglib2.0-0 \
+    libnspr4 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    libxkbcommon0 \
+    libasound2t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install shot-scraper
+RUN pip install shot-scraper
+
+# Install the browser and system dependencies
+RUN shot-scraper install
+RUN playwright install-deps
+
+# Create a working directory
+WORKDIR /screenshots
+
+# Default command
+CMD ["shot-scraper", "--help"]
+
+#+end_src
+
+Build an image from the above Dockerfile called 'shot-scraper', then to run it :
+
+#+begin_src sh
+# Run shot-scraper help
+docker run --rm shot-scraper
+
+# Take screenshot of localhost service (requires --network host)
+docker run --rm --network host -v "$HOME:$HOME" -w "$(pwd)" shot-scraper shot-scraper http://localhost:8000
+
+# Using podman (same commands work)
+podman run --rm --network host -v "$HOME:$HOME" -w "$(pwd)" shot-scraper shot-scraper http://localhost:8000
+#+end_src
+
+** getting it to run .. from Claude
+
+Now, I just want to tell Claude to run it like:
+
+#+begin_src sh
+# Full page screenshot
+shot-scraper https://example.com
+
+# With specific dimensions
+shot-scraper https://example.com -h 900 -w 1200
+
+# Wait for element before shooting
+shot-scraper https://example.com --selector "#loaded-content"
+#+end_src
+
+So, I decided to alias the longish docker/podman command to 'shot-scraper' in my ~/.bashrc, but that didn't work as Claude is unable to /see/ the aliases I define.
+
+What does work is creating our own shot-scraper executable (which is just a bash script that runs the container), and adding that to the =PATH=.
+
+#+caption: Added the following line to my ~/.bashrc
+#+begin_src bash
+# shot-scraper
+# https://shot-scraper.datasette.io/
+# See ~/guix-config/.config/useful-docker-images/shot-scraper/
+export PATH=$PATH:"$HOME/guix-config/.config/useful-docker-images/shot-scraper/bin"
+#+end_src
+
+#+caption: The bash script file named 'shot-scraper'
+#+begin_src python
+#!/usr/bin/env bash
+
+# Shot-scraper wrapper script for Docker/Podman
+# This script allows running shot-scraper through a container with proper networking and volume mounts
+
+# Function to detect available container runtime
+detect_runtime() {
+    if command -v docker >/dev/null 2>&1; then
+        echo "docker"
+    elif command -v podman >/dev/null 2>&1; then
+        echo "podman"
+    else
+        echo "Error: Neither docker nor podman found" >&2
+        exit 1
+    fi
+}
+
+# Get the container runtime
+RUNTIME=$(detect_runtime)
+
+# Run shot-scraper in container with host networking and home directory mounted
+exec "$RUNTIME" run --rm --network host -v "$HOME:$HOME" -w "$(pwd)" shot-scraper shot-scraper "$@"
+#+end_src
+
+With this now we can call ~shot-scraper~ normally in the terminal and everything should /just work/.
+
+See the complete config (Makefile etc.[fn:: I am considering the system having either docker or podman, because in my Guix system I have podman, while in my Ubuntu system (in which due to Guix being installed, playwright doesn't work) I have docker ] ) at  [[https://github.com/nbljaved/guix-config/blob/main/.config/useful-docker-images/shot-scraper/][github.com/nbljaved/guix-config...shot-scraper]].

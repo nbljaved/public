@@ -1,6 +1,9 @@
-#+TITLE: This blog took a year to build
-#+DATE: 2025-11-18
-#+OPTIONS: toc:nil num:nil html-style:nil
+#+TITLE: test2
+#+DATE: <2025-12-30 Tue>
+# #+OPTIONS: toc:nil num:nil
+#+AUTHOR: Nabeel Javed
+#+options: author:t date:t
+{{{published}}}
 
 * ok
 

@@ -8,3 +8,26 @@ Hi, I am a software engineer.
 - Github https://github.com/nbljaved
 - LinkedIn https://linkedin.com/in/nbljaved
 - Website [fn:: I link to whatever I want, this is my corner of the internet. Here people can recurse without fear of any aspersions being cast on their character !] https://nbljaved.com/about
+
+
+*** COMMENT Books [fn:: Only of the non-fiction category, as I don't want to go through the trouble of implementing infinite scroll]
+
+#+begin_export html
+<details>
+<summary>
+Yet to start
+</summary>
+#+end_export
+- Yet to start ::
+  - b
+
+- In Progress ::
+  - a
+
+- Completed ::
+  - c
+
+#+begin_export html
+
+</details>
+#+end_export

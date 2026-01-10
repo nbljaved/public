@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Getting shot-scraper to run in Guix</title>
+<meta name="generator" content="Org Mode" />
+<link rel="stylesheet" href="/static/css/simple.css"/><link rel="stylesheet" href="/static/css/custom.css"/><link rel="stylesheet" href="/static/css/highlight.css"/><link rel="icon" type="image/svg+xml" href="/static/img/nj.svg"/>
+</head>
+<body>
+<header id="preamble" class="status">
+<div><h1>Nabeel Javed</h1><nav><a href="/">Blog</a><a href="/about.html">About</a></nav></div>
+</header>
+<main id="content" class="content">
+<header>
+<h1 class="title">Getting shot-scraper to run in Guix</h1>
+</header><p>
+<div class="timestamp2"><div hidden class="published">2026-01-10</div><div>January 10, 2026</div><i></i></div>
+</p>
+
+<p>
+I wanted to give my Claude the 'skill' to screenshot webpages, so that it could help me with UI design. So, I decided to try out the <a href="https://shot-scraper.datasette.io/">shot-scraper</a> CLI.
+</p>
+<div id="outline-container-org66711a3" class="outline-2">
+<h2 id="org66711a3">getting it to run</h2>
+<div class="outline-text-2" id="text-org66711a3">
+<p>
+Now, the installations instructions provided on the webpage are simple enough, <code>pip install shot-scraper</code>.
+</p>
+
+<div class="org-src-container">
+<pre class="src src-sh">python3 -m pip install --user shot-scraper
+</pre>
+</div>
+
+<p>
+The above command succeeds, but the following one fails:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-sh">shot-scraper google.com
+</pre>
+</div>
+
+<pre class="example" id="org7354ca8">
+...
+...
+FileNotFoundError: [Errno 2] No such file or directory: '/home/nabeel/.local/lib/python3.11/site-packages/playwright/driver/node'
+</pre>
+
+<p>
+As a user of Guix you need to pay the <a href="https://en.wikipedia.org/wiki/Filesystem_Hierarchy_Standard">FHS</a> tax (read <a href="https://guix.gnu.org/en/blog/2023/the-filesystem-hierarchy-standard-comes-to-guix-containers/">this</a> article by the Guix team) whose conventions reproducible systems like Guix/Nix don't follow<sup><a id="fnr.1" class="footref" href="#fn.1" role="doc-backlink">1</a></sup>.
+</p>
+
+<p>
+This is a pothole that trips over many new (and old !) Guix users who then make the sensible decision of washing their hands off the Python ecosystem and switch over to Go land, where programs are static binaries and you can <i>just get to work</i>.
+</p>
+
+<p>
+There is an excellent article written about <a href="https://zie87.github.io/posts/guix-foreign-binaries/">Running foreing binaries in Guix</a>.
+</p>
+
+<p>
+In this particular situation, us wanting to run <code>shot-scraper</code>, we face problems because <code>shot-scraper</code> uses playwright which in turn assumes FHS on Linux systems. So the problem is one level deeper and not about <i>fixing</i> the <code>shot-scraper</code> executable.
+Therefore, trying it out with <code>pip</code>, <code>uv</code><sup><a id="fnr.2" class="footref" href="#fn.2" role="doc-backlink">2</a></sup>, or installing Nix's shot-scraper package all fail !
+</p>
+
+<p>
+The solution is simple.
+</p>
+
+<p>
+Docker-isation (or <a href="https://guix.gnu.org/manual/devel/en/guix.html#index-Rootless-Podman">Podman-isation</a> as the <a href="https://packages.guix.gnu.org/packages/docker/20.10.27/">docker package</a> on guix as of this writing is version 20.10, which is proper old), because we need <i>state</i>, i.e. a properly configured playwright.
+</p>
+
+<p>
+The following Dockerfile works for me:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-dockerfile">FROM python:3.11-slim
+
+# Install system dependencies for Playwright
+RUN apt-get update &amp;&amp; apt-get install -y \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libexpat1 \
+    libgbm1 \
+    libglib2.0-0 \
+    libnspr4 \
+    libx11-6 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxrandr2 \
+    libxss1 \
+    libxtst6 \
+    libxkbcommon0 \
+    libasound2t64 \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+# Install shot-scraper
+RUN pip install shot-scraper
+
+# Install the browser and system dependencies
+RUN shot-scraper install
+RUN playwright install-deps
+
+# Create a working directory
+WORKDIR /screenshots
+
+# Default command
+CMD ["shot-scraper", "--help"]
+
+</pre>
+</div>
+
+<p>
+Build an image from the above Dockerfile called 'shot-scraper', then to run it :
+</p>
+
+<div class="org-src-container">
+<pre class="src src-sh"><span class="org-comment-delimiter"># </span><span class="org-comment">Run shot-scraper help
+</span>docker run --rm shot-scraper
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Take screenshot of localhost service (requires --network host)
+</span>docker run --rm --network host -v <span class="org-string">"$HOME:$HOME"</span> -w <span class="org-string">"$(</span><span class="org-sh-quoted-exec">pwd</span><span class="org-string">)"</span> shot-scraper shot-scraper http://localhost:8000
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Using podman (same commands work)
+</span>podman run --rm --network host -v <span class="org-string">"$HOME:$HOME"</span> -w <span class="org-string">"$(</span><span class="org-sh-quoted-exec">pwd</span><span class="org-string">)"</span> shot-scraper shot-scraper http://localhost:8000
+</pre>
+</div>
+</div>
+</div>
+<div id="outline-container-org67decdc" class="outline-2">
+<h2 id="org67decdc">getting it to run .. from Claude</h2>
+<div class="outline-text-2" id="text-org67decdc">
+<p>
+Now, I just want to tell Claude to run it like:
+</p>
+
+<div class="org-src-container">
+<pre class="src src-sh"><span class="org-comment-delimiter"># </span><span class="org-comment">Full page screenshot
+</span>shot-scraper https://example.com
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">With specific dimensions
+</span>shot-scraper https://example.com -h 900 -w 1200
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Wait for element before shooting
+</span>shot-scraper https://example.com --selector <span class="org-string">"#loaded-content"</span>
+</pre>
+</div>
+
+<p>
+So, I decided to alias the longish docker/podman command to 'shot-scraper' in my ~/.bashrc, but that didn't work as Claude is unable to <i>see</i> the aliases I define.
+</p>
+
+<p>
+What does work is creating our own shot-scraper executable (which is just a bash script that runs the container), and adding that to the <code>PATH</code>.
+</p>
+
+<div class="org-src-container">
+<label class="org-src-name"><span class="listing-number">Listing 1: </span>Added the following line to my ~/.bashrc</label><pre class="src src-bash"><span class="org-comment-delimiter"># </span><span class="org-comment">shot-scraper
+</span><span class="org-comment-delimiter"># </span><span class="org-comment">https://shot-scraper.datasette.io/
+</span><span class="org-comment-delimiter"># </span><span class="org-comment">See ~/guix-config/.config/useful-docker-images/shot-scraper/
+</span><span class="org-builtin">export</span> <span class="org-variable-name">PATH</span>=$<span class="org-variable-name">PATH</span>:<span class="org-string">"$HOME/guix-config/.config/useful-docker-images/shot-scraper/bin"</span>
+</pre>
+</div>
+
+<div class="org-src-container">
+<label class="org-src-name"><span class="listing-number">Listing 2: </span>The bash script file named 'shot-scraper'</label><pre class="src src-python"><span class="org-comment-delimiter">#</span><span class="org-comment">!/usr/bin/env bash
+</span>
+<span class="org-comment-delimiter"># </span><span class="org-comment">Shot-scraper wrapper script for Docker/Podman
+</span><span class="org-comment-delimiter"># </span><span class="org-comment">This script allows running shot-scraper through a container with proper networking and volume mounts
+</span>
+<span class="org-comment-delimiter"># </span><span class="org-comment">Function to detect available container runtime
+</span>detect_runtime() {
+    <span class="org-keyword">if</span> command <span class="org-operator">-</span>v docker <span class="org-operator">&gt;/</span>dev<span class="org-operator">/</span>null 2<span class="org-operator">&gt;&amp;</span>1; then
+        echo <span class="org-string">"docker"</span>
+    <span class="org-keyword">elif</span> command <span class="org-operator">-</span>v podman <span class="org-operator">&gt;/</span>dev<span class="org-operator">/</span>null 2<span class="org-operator">&gt;&amp;</span>1; then
+        echo <span class="org-string">"podman"</span>
+    <span class="org-keyword">else</span>
+        echo <span class="org-string">"Error: Neither docker nor podman found"</span> <span class="org-operator">&gt;&amp;</span>2
+        <span class="org-constant">exit</span> 1
+    fi
+}
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Get the container runtime
+</span><span class="org-variable-name">RUNTIME</span><span class="org-operator">=</span>$(detect_runtime)
+
+<span class="org-comment-delimiter"># </span><span class="org-comment">Run shot-scraper in container with host networking and home directory mounted
+</span><span class="org-builtin">exec</span> <span class="org-string">"$RUNTIME"</span> run <span class="org-operator">--</span>rm <span class="org-operator">--</span>network host <span class="org-operator">-</span>v <span class="org-string">"$HOME:$HOME"</span> <span class="org-operator">-</span>w <span class="org-string">"$(pwd)"</span> shot<span class="org-operator">-</span>scraper shot<span class="org-operator">-</span>scraper <span class="org-string">"$@"</span>
+</pre>
+</div>
+
+<p>
+With this now we can call <code>shot-scraper</code> normally in the terminal and everything should <i>just work</i>.
+</p>
+
+<p>
+See the complete config (Makefile etc.<sup><a id="fnr.3" class="footref" href="#fn.3" role="doc-backlink">3</a></sup> ) at  <a href="https://github.com/nbljaved/guix-config/blob/main/.config/useful-docker-images/shot-scraper/">github.com/nbljaved/guix-config&#x2026;shot-scraper</a>.
+</p>
+</div>
+</div>
+<div id="footnotes">
+<h2 class="footnotes">Footnotes: </h2>
+<div id="text-footnotes">
+
+<div class="footdef"><sup><a id="fn.1" class="footnum" href="#fnr.1" role="doc-backlink">1</a></sup> <div class="footpara" role="doc-footnote"><p class="footpara">we are cool like that</p></div></div>
+
+<div class="footdef"><sup><a id="fn.2" class="footnum" href="#fnr.2" role="doc-backlink">2</a></sup> <div class="footpara" role="doc-footnote"><p class="footpara">using the uv binary in Guix runs into the same FHS problem, so these days I install <code>uv</code> from Nix</p></div></div>
+
+<div class="footdef"><sup><a id="fn.3" class="footnum" href="#fnr.3" role="doc-backlink">3</a></sup> <div class="footpara" role="doc-footnote"><p class="footpara">I am considering the system having either docker or podman, because in my Guix system I have podman, while in my Ubuntu system (in which due to Guix being installed, playwright doesn't work) I have docker</p></div></div>
+
+
+</div>
+</div></main>
+<footer id="postamble" class="status">
+<div>Created with <a href="https://www.gnu.org/software/emacs/"><img src="/static/img/EmacsIcon.svg" style="height:1.2em;position:relative;top:0.25em"/></a> and <a href="https://orgmode.org/"><img src="/static/img/Org-mode-unicorn.svg" style="height:1.2em;position:relative;top:0.25em"/></a><div class="source-link"><a href="https://github.com/nbljaved/public/tree/main/nbljaved.com">Source code for this site</a></div><!-- Cloudflare Web Analytics --><script defer="" src="https://static.cloudflareinsights.com/beacon.min.js" data-cd-beacon="{&quot;token&quot;: &quot;21afbb500f704e30849cbe64ad813cf1&quot;}"></script><!-- End Cloudflare Web Analytics --></div>
+</footer>
+</body>
+</html>

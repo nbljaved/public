@@ -1,2 +1,9 @@
 #+TITLE: 
 
+#+begin_export html
+
+<div class="atom-feed"><a href="/blog/atom.xml">Atom Feed <img src="/static/img/feed-icon.svg" class="feed-icon"/></a></div> 
+ 
+#+end_export 
+
+- {{{timestamp(2026 Jan 10)}}} [[file:posts/running-shot-scraper-in-guix.org][Getting shot-scraper to run in Guix]]

@@ -1,6 +1,14 @@
 /* https://simplecss.org/demo */
 /* https://github.com/kevquirk/simple.css/blob/main/simple.css */
 
+/* Don't like it :) */
+/* @view-transition { */
+/*   navigation: auto; */
+/* } */
+/* ::view-transition-group(*) { */
+/*   animation-duration: 0.10s; */
+/* } */
+
 /* To use light mode only */
 /* https://github.com/kevquirk/simple.css/wiki/Getting-Started-With-Simple.css#use-dark-or-light-mode-only */
 @media (prefers-color-scheme: dark) {

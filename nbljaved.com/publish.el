@@ -248,18 +248,18 @@ it displays 'Last updated: ARG1' below the publication date."
 ;; https://gitlab.com/ambrevar/emacs-webfeeder
 (defun nbljaved.com/generate-feed ()
   "Generate Atom feed from published blog posts."
-  (let* ((base-dir (expand-file-name "html" (file-name-directory (or load-file-name buffer-file-name))))
-         (blog-dir (expand-file-name "blog" base-dir))
-         (posts-dir (expand-file-name "posts" blog-dir))
-         (feed-file (expand-file-name "atom.xml" blog-dir))
-         (blog-url "https://nbljaved.com/")
-         (html-files (directory-files posts-dir t "\\.html$")))
+  (let* ((project-dir (expand-file-name "html/blog" (file-name-directory (or load-file-name buffer-file-name))))
+         (posts-dir (expand-file-name "posts" project-dir))
+         (url "https://nbljaved.com/blog/")
+         ;; Get relative paths from project-dir (webfeeder expects paths relative to project-dir)
+         (html-files (mapcar (lambda (f) (concat "posts/" f))
+                             (directory-files posts-dir nil "\\.html$"))))
     (let ((webfeeder-title-function #'atom-extract-title)
           (webfeeder-date-function #'atom-extract-date))
       (webfeeder-build
-       feed-file
-       blog-dir
-       blog-url
+       "atom.xml"
+       project-dir
+       url
        html-files
        :title "Nabeel Javed's Blog"
        :description "Nabeel's blog posts feed in Atom"

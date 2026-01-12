@@ -25,6 +25,7 @@ shot-scraper google.com
 #+end_src
 
 #+RESULTS:
+#+ATTR_HTML: :id filenotfound-error
 #+begin_example
 ...
 ...
